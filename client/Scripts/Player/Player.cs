@@ -100,6 +100,15 @@ public class Player : Entity
     [SerializeField] private float visualSnapDistance = 0.18f;
 
     private bool visualInitialized;
+    private string currentNetworkWeaponId = "";
+    [Header("网络身份")]
+    [SerializeField] private string clientId = "Client1";
+    public string ClientId => clientId;
+
+    public void SetClientId(string value)
+    {
+        clientId = value;
+    }
 
     protected override void Awake()
     {
@@ -153,10 +162,13 @@ public class Player : Entity
         input.Player.Movement.canceled += ctx => moveInput = Vector2.zero;
 
         input.Player.Interact.performed += ctx => TryInteract();
-        input.Player.QuickItemSlot_1.performed += ctx => inventory.TryUseQuickItemInSlot(1);
-        input.Player.QuickItemSlot_2.performed += ctx => inventory.TryUseQuickItemInSlot(2);
-    }
 
+        if (inventory != null)
+        {
+            input.Player.QuickItemSlot_1.performed += ctx => inventory.TryUseQuickItemInSlot(1);
+            input.Player.QuickItemSlot_2.performed += ctx => inventory.TryUseQuickItemInSlot(2);
+        }
+    }
     private void OnDisable()
     {
         input?.Disable();
@@ -164,16 +176,20 @@ public class Player : Entity
 
     protected override void Update()
     {
+        if (useNetworkControl)
+        {
+            if (isLocalPlayer)
+            {
+                FlipCharacterTowardsMouse();
+                AimTowardsMouse();
+            }
+
+            return;
+        }
+
         base.Update();
         UpdateLocalInputCache();
-
-        if (!isLocalPlayer)
-            return;
-
-        FlipCharacterTowardsMouse();
-        AimTowardsMouse();
     }
-
     private void LateUpdate()
     {
         if (!useNetworkControl || predictionController == null || anim == null)
@@ -622,5 +638,83 @@ public class Player : Entity
         visualRoot.localPosition = Vector3.Lerp(visualRoot.localPosition, targetLocal, t);
     }
 
+    public void ApplyNetworkAim(float aimX, float aimY)
+    {
+        if (currentWeaponData == null)
+            return;
 
+        Vector2 aimDirection = new Vector2(aimX, aimY);
+
+        if (aimDirection.sqrMagnitude < 0.0001f)
+            return;
+
+        aimDirection.Normalize();
+
+        // 用 aimX 修正角色朝向。
+        // 这样远端玩家朝左/朝右也会同步。
+        if (aimDirection.x > 0.01f && !facingRight)
+        {
+            Flip();
+        }
+        else if (aimDirection.x < -0.01f && facingRight)
+        {
+            Flip();
+        }
+
+        Transform activeHoldPoint = currentWeaponData.isRanged ? gunHoldPoint : bladeHoldePoint;
+        Transform idleHoldPoint = currentWeaponData.isRanged ? bladeHoldePoint : gunHoldPoint;
+
+        if (activeHoldPoint != null)
+        {
+            float localX = aimDirection.x * facingDir;
+            float localY = aimDirection.y;
+
+            float angle = Mathf.Atan2(localY, localX) * Mathf.Rad2Deg;
+            activeHoldPoint.localRotation = Quaternion.Euler(0, 0, angle);
+        }
+
+        if (idleHoldPoint != null)
+        {
+            idleHoldPoint.localRotation = Quaternion.identity;
+        }
+    }
+    public void SetNetworkLocalPlayer(bool value)
+    {
+        isLocalPlayer = value;
+
+        // 联机模式下，Player 自己不直接处理本地输入。
+        // 本地输入统一由 InputPacker 读取并发送给服务器。
+        useNetworkControl = true;
+    }
+    public void ApplyServerWeapon(string weaponId)
+    {
+        if (string.IsNullOrWhiteSpace(weaponId))
+            return;
+
+        if (currentNetworkWeaponId == weaponId)
+            return;
+
+        WeaponDataSO weaponData = NetworkWeaponDatabase.Instance != null
+            ? NetworkWeaponDatabase.Instance.GetWeaponData(weaponId)
+            : null;
+
+        if (weaponData == null)
+        {
+            Debug.LogWarning($"[Player:{name}] ApplyServerWeapon 找不到 weaponId={weaponId}");
+            return;
+        }
+
+        currentNetworkWeaponId = weaponId;
+        EquipWeapon(weaponData);
+
+        Debug.Log($"[Player:{name}] ApplyServerWeapon weaponId={weaponId}");
+    }
+
+    public void PlayNetworkMeleeAttack()
+    {
+        if (currentWeaponInstance == null)
+            return;
+
+        currentWeaponInstance.PlayAttackVisual();
+    }
 }

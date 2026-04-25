@@ -13,7 +13,9 @@ public class Weapon : MonoBehaviour
 
     // 🌟 1. 缓存目标图层，供继承的子类（MeleeWeapon / RangedWeapon）随时调用
     public LayerMask targetMask;
-    public List<WeaponEffectSO> runtimeEffects = new List<WeaponEffectSO>();
+
+    public List<WeaponEffectSO> RuntimeEffects => runtimeEffects;
+    [SerializeField] protected List<WeaponEffectSO> runtimeEffects = new List<WeaponEffectSO>();
     private Dictionary<WeaponEffectSO, Coroutine> activeCoroutines = new Dictionary<WeaponEffectSO, Coroutine>();
     // 只有在装备这把武器的那一刻，调用一次
 
@@ -153,5 +155,9 @@ public class Weapon : MonoBehaviour
             activeCoroutines.Remove(effect); // 字典里也清掉
             Debug.Log($"特效已过期: {effect.name}");
         }
+    }
+
+    public virtual void PlayAttackVisual()
+    {
     }
 }
