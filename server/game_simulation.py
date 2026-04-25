@@ -1,6 +1,10 @@
 from typing import List, Optional
 
 from game_config import (
+    BLAST_X_MAX,
+    BLAST_X_MIN,
+    BLAST_Y_MAX,
+    BLAST_Y_MIN,
     FALL_SPEED_CAP,
     GRAVITY,
     GROUND_EPSILON,
@@ -29,7 +33,6 @@ MAP_WALLS: List[RectCollider] = [
 
 
 def hits_wall(x: float, y: float) -> bool:
-    """判断角色包围盒在给定位置是否与墙体重叠。"""
     player_left = x - PLAYER_HALF_WIDTH
     player_right = x + PLAYER_HALF_WIDTH
     player_bottom = y
@@ -38,7 +41,6 @@ def hits_wall(x: float, y: float) -> bool:
     for wall in MAP_WALLS:
         overlap_x = player_right > wall.x_min and player_left < wall.x_max
         overlap_y = player_top > wall.y_min and player_bottom < wall.y_max
-
         if overlap_x and overlap_y:
             return True
 
@@ -46,7 +48,6 @@ def hits_wall(x: float, y: float) -> bool:
 
 
 def step_vertical(session: ClientSession) -> None:
-    """按原始顺序推进角色垂直速度和落地状态。"""
     standing = get_standing_platform(session)
     if standing is not None and session.accepted_grounded and session.vel_y <= 0.0:
         session.pos_y = standing.y
@@ -65,12 +66,12 @@ def step_vertical(session: ClientSession) -> None:
         session.pos_y = landing.y
         session.vel_y = 0.0
         session.accepted_grounded = True
-        if session.accepted_state not in ("Dash", "BasicAttack"):
+        if session.accepted_state not in ("Dash", "BasicAttack", "Hitstun"):
             session.accepted_state = "Grounded"
     else:
         session.pos_y = next_y
         session.accepted_grounded = False
-        if session.vel_y < 0 and session.accepted_state not in ("Jump", "Dash", "BasicAttack"):
+        if session.vel_y < 0 and session.accepted_state not in ("Jump", "Dash", "BasicAttack", "Hitstun"):
             session.accepted_state = "Fall"
 
 
@@ -101,3 +102,7 @@ def find_landing_platform(x: float, previous_y: float, next_y: float) -> Optiona
 
     candidates.sort(key=lambda p: p.y, reverse=True)
     return candidates[0]
+
+
+def is_out_of_bounds(x: float, y: float) -> bool:
+    return x < BLAST_X_MIN or x > BLAST_X_MAX or y < BLAST_Y_MIN or y > BLAST_Y_MAX

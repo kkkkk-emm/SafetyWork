@@ -7,161 +7,195 @@ public class InputPacker : MonoBehaviour
     [SerializeField] private bool debugInputLog = true;
     [SerializeField] private int logEveryNPackets = 10;
 
-    private PlayerInputSet input;
-    private int currentSeq = 0;
-
+    [Header("引用")]
     [SerializeField] private RelayChatClient relayClient;
+    [SerializeField] private ClientPredictionController predictionController;
     [SerializeField] private Transform aimOrigin;
     [SerializeField] private Player player;
-    [SerializeField] private ClientPredictionController predictionController;
 
-    private float lastMeasuredX;
-    private bool hasLastMeasuredX;
+    private PlayerInputSet input;
 
-    // 关键：瞬时输入先缓存
+    private int currentSeq = 0;
+    private int currentTick = 0;
+
     private bool jumpPressedBuffered;
-    private bool dashPressedBuffered;
     private bool attackPressedBuffered;
+    private bool lastAttackHeld;
 
     private void Awake()
     {
-        input = new PlayerInputSet();
+        if (relayClient == null)
+            relayClient = FindFirstObjectByType<RelayChatClient>();
 
-        if (aimOrigin == null)
-            aimOrigin = transform;
-
-        if (player == null)
-            player = GetComponent<Player>();
-
-        if (predictionController == null)
-            predictionController = GetComponent<ClientPredictionController>();
-
-        if (player != null)
-        {
-            lastMeasuredX = player.transform.position.x;
-            hasLastMeasuredX = true;
-        }
-    }
-
-    private void OnEnable()
-    {
-        input.Enable();
-
-        input.Player.Jump.performed += OnJumpPerformed;
-        input.Player.Dash.performed += OnDashPerformed;
-        input.Player.Attack.performed += OnAttackPerformed;
+        // 等 Binder 来绑定本地 Player。
+        enabled = false;
     }
 
     private void OnDisable()
     {
-        input.Player.Jump.performed -= OnJumpPerformed;
-        input.Player.Dash.performed -= OnDashPerformed;
-        input.Player.Attack.performed -= OnAttackPerformed;
-
-        input.Disable();
+        UnbindInputEvents();
     }
 
-    private void OnJumpPerformed(InputAction.CallbackContext ctx)
+    public void BindPlayer(Player newPlayer, ClientPredictionController newPredictionController)
+    {
+        UnbindInputEvents();
+
+        player = newPlayer;
+        predictionController = newPredictionController;
+
+        if (relayClient == null)
+            relayClient = FindFirstObjectByType<RelayChatClient>();
+
+        currentSeq = 0;
+        currentTick = 0;
+
+        jumpPressedBuffered = false;
+        attackPressedBuffered = false;
+        lastAttackHeld = false;
+
+        if (player == null)
+        {
+            Debug.LogError("[InputPacker] BindPlayer 收到空 Player");
+            enabled = false;
+            return;
+        }
+
+        aimOrigin = player.transform;
+        input = player.input;
+
+        if (input == null)
+        {
+            Debug.LogError($"[InputPacker] {player.name}.input 为空");
+            enabled = false;
+            return;
+        }
+
+        input.Enable();
+
+        input.Player.Jump.performed += OnJumpPerformed;
+        input.Player.Attack.performed += OnAttackPerformed;
+
+        enabled = true;
+
+        Debug.Log(
+            $"[InputPacker] BindPlayer -> player={player.name}, " +
+            $"localClient={relayClient?.ClientId}, " +
+            $"prediction={(predictionController != null ? predictionController.name : "null")}"
+        );
+    }
+
+    private void UnbindInputEvents()
+    {
+        if (input == null)
+            return;
+
+        input.Player.Jump.performed -= OnJumpPerformed;
+        input.Player.Attack.performed -= OnAttackPerformed;
+    }
+
+    private void OnJumpPerformed(InputAction.CallbackContext _)
     {
         jumpPressedBuffered = true;
+
         if (debugInputLog)
-            Debug.Log("[InputPacker] Jump PERFORMED");
+            Debug.Log($"[InputPacker:{player?.name}] Jump performed");
     }
 
-    private void OnDashPerformed(InputAction.CallbackContext ctx)
-    {
-        dashPressedBuffered = true;
-    }
-
-    private void OnAttackPerformed(InputAction.CallbackContext ctx)
+    private void OnAttackPerformed(InputAction.CallbackContext _)
     {
         attackPressedBuffered = true;
+
+        if (debugInputLog)
+            Debug.Log($"[InputPacker:{player?.name}] Attack performed");
     }
 
     private void FixedUpdate()
     {
+        if (relayClient == null || player == null || input == null)
+            return;
+
+        if (!relayClient.HasJoinedRoom)
+            return;
+
+        currentTick++;
+
         Vector2 move = input.Player.Movement.ReadValue<Vector2>();
         Vector2 aim = ReadAimDirection();
 
-        // 从 buffer 取，而不是直接 WasPressedThisFrame()
-        bool jumpPressed = jumpPressedBuffered;
-        bool dashPressed = dashPressedBuffered;
-        bool attackPressed = attackPressedBuffered;
-
-        // 消费后清掉
-        jumpPressedBuffered = false;
-        dashPressedBuffered = false;
-        attackPressedBuffered = false;
+        bool jumpPressed = jumpPressedBuffered || input.Player.Jump.WasPressedThisFrame();
+        bool attackPressed = attackPressedBuffered || input.Player.Attack.WasPressedThisFrame();
 
         bool attackHeld = input.Player.Attack.IsPressed();
+        bool attackReleased = lastAttackHeld && !attackHeld;
+        lastAttackHeld = attackHeld;
+
         bool downHeld = move.y < -0.5f;
         bool dropPressed = downHeld && jumpPressed;
 
-        float packedMoveX = Mathf.Clamp(move.x, -1f, 1f);
-
-        float clientPosX = player != null ? player.transform.position.x : transform.position.x;
-        float clientVelX = 0f;
-
-        if (hasLastMeasuredX)
-        {
-            float dx = clientPosX - lastMeasuredX;
-            clientVelX = dx / Time.fixedDeltaTime;
-        }
-
-        lastMeasuredX = clientPosX;
-        hasLastMeasuredX = true;
-
-        player?.ApplyNetworkInputFrame(
+        player.ApplyNetworkInputFrame(
             move,
             jumpPressed,
-            dashPressed,
+            false,
             attackPressed,
             attackHeld,
             downHeld,
             dropPressed
         );
 
-        var cmd = new PlayerInputCmd
+        PredictedPlayerState predicted = predictionController != null
+            ? predictionController.GetPredictedState()
+            : default;
+
+        PlayerInputCmd cmd = new PlayerInputCmd
         {
             seq = currentSeq++,
-            moveX = packedMoveX,
+            tick = currentTick,
+
+            moveX = move.x,
 
             jumpPressed = jumpPressed,
-            attackPressed = attackPressed,
             downHeld = downHeld,
             dropPressed = dropPressed,
+
+            attackPressed = attackPressed,
+            attackHeld = attackHeld,
+            attackReleased = attackReleased,
+
             aimX = aim.x,
             aimY = aim.y,
 
-            clientState = player != null ? player.GetCurrentStateName() : "Unknown",
-            clientGrounded = player != null && player.GetIsGroundedForNet(),
-            clientJumpCount = player != null ? player.GetJumpCountForNet() : 0,
+            clientState = player.GetCurrentStateName(),
+            clientGrounded = player.GetIsGroundedForNet(),
+            clientJumpCount = player.GetJumpCountForNet(),
 
-            clientPosX = clientPosX,
-            clientVelX = clientVelX
+            clientPosX = predicted.posX,
+            clientPosY = predicted.posY,
+            clientVelX = predicted.velX,
+            clientVelY = predicted.velY,
+
+            equippedWeaponId = GetCurrentWeaponId(),
+            equippedEffectIds = GetCurrentEffectIds()
         };
 
         predictionController?.AddLocalInput(cmd);
 
-        if (relayClient != null)
+        if (debugInputLog && (cmd.seq == 0 || cmd.seq % Mathf.Max(1, logEveryNPackets) == 0))
         {
-            if (debugInputLog && (currentSeq == 1 || currentSeq % Mathf.Max(1, logEveryNPackets) == 0))
-            {
-                Debug.Log(
-                    $"[InputPacker:{name}] send seq={cmd.seq} inputX={cmd.moveX:F2} " +
-                    $"clientPosX={cmd.clientPosX:F3} clientVelX={cmd.clientVelX:F3} " +
-                    $"jump={cmd.jumpPressed} attack={cmd.attackPressed} dash={dashPressed} " +
-                    $"aim=({cmd.aimX:F2},{cmd.aimY:F2}) " +
-                    $"state={cmd.clientState} grounded={cmd.clientGrounded} jumpCount={cmd.clientJumpCount}"
-                );
-            }
+            Debug.Log(
+                $"[InputPacker:{player.name}] send seq={cmd.seq} tick={cmd.tick} " +
+                $"moveX={cmd.moveX:F2} jump={cmd.jumpPressed} " +
+                $"atkPressed={cmd.attackPressed} atkHeld={cmd.attackHeld} atkReleased={cmd.attackReleased} " +
+                $"aim=({cmd.aimX:F2},{cmd.aimY:F2}) " +
+                $"state={cmd.clientState} grounded={cmd.clientGrounded} jumpCount={cmd.clientJumpCount} " +
+                $"pos=({cmd.clientPosX:F2},{cmd.clientPosY:F2}) vel=({cmd.clientVelX:F2},{cmd.clientVelY:F2}) " +
+                $"weapon={cmd.equippedWeaponId} effects={(cmd.equippedEffectIds != null ? string.Join(",", cmd.equippedEffectIds) : "")}"
+            );
+        }
 
-            _ = relayClient.SendInput(cmd);
-        }
-        else if (debugInputLog)
-        {
-            Debug.LogWarning($"[InputPacker:{name}] relayClient 没有绑定，输入包没有发出去。");
-        }
+        _ = relayClient.SendInput(cmd);
+
+        jumpPressedBuffered = false;
+        attackPressedBuffered = false;
     }
 
     private Vector2 ReadAimDirection()
@@ -174,9 +208,46 @@ public class InputPacker : MonoBehaviour
         mouseWorld.z = 0f;
 
         Vector2 direction = mouseWorld - aimOrigin.position;
+
         if (direction.sqrMagnitude < 0.0001f)
             return Vector2.right;
 
         return direction.normalized;
+    }
+
+    private string GetCurrentWeaponId()
+    {
+        if (player != null && player.currentWeaponData != null)
+            return player.currentWeaponData.name;
+
+        return "手枪";
+    }
+
+    private string[] GetCurrentEffectIds()
+    {
+        if (player == null || player.currentWeaponInstance == null)
+            return System.Array.Empty<string>();
+
+        var runtimeEffects = player.currentWeaponInstance.RuntimeEffects;
+
+        if (runtimeEffects == null || runtimeEffects.Count == 0)
+            return System.Array.Empty<string>();
+
+        string[] ids = new string[runtimeEffects.Count];
+
+        for (int i = 0; i < runtimeEffects.Count; i++)
+        {
+            var effect = runtimeEffects[i];
+
+            if (effect == null)
+            {
+                ids[i] = "";
+                continue;
+            }
+
+            ids[i] = effect.name;
+        }
+
+        return ids;
     }
 }

@@ -8,17 +8,17 @@ public class ClientPredictionController : MonoBehaviour
     [SerializeField] private Player player;
 
     [Header("参数")]
-    [SerializeField] private float fixedDt = 0.02f;
-    [SerializeField] private float moveSpeed = 8f;
-    [SerializeField] private float gravity = -1.2f;
-    [SerializeField] private float jumpVelocity = 10f;
-    [SerializeField] private float fallSpeedCap = -18f;
+    [SerializeField] private float fixedDt = 0.05f;
+    [SerializeField] private float moveSpeed = 3.2f;
+    [SerializeField] private float gravity = -0.4f;
+    [SerializeField] private float jumpVelocity = 6.0f;
+    [SerializeField] private float fallSpeedCap = -7.2f;
     [SerializeField] private float snapThreshold = 1.0f;
 
-    [Header("地图参数（需与服务器一致）")]
-    [SerializeField] private float groundEpsilon = 0.2f;
-    [SerializeField] private float playerHalfWidth = 0.4f;
-    [SerializeField] private float playerHalfHeight = 0.9f;
+    [Header("地图参数，需要和服务器一致")]
+    [SerializeField] private float groundEpsilon = 0.001f;
+    [SerializeField] private float playerHalfWidth = 0.46f;
+    [SerializeField] private float playerHalfHeight = 0.42f;
     [SerializeField] private float offsetY = 0.7f;
 
     [Header("调试")]
@@ -29,8 +29,6 @@ public class ClientPredictionController : MonoBehaviour
 
     private float GroundY => -1.45f + offsetY;
     private const int MaxJumpCount = 2;
-
-    private Vector3 logicPos;
 
     [Serializable]
     private struct PlatformData
@@ -73,11 +71,30 @@ public class ClientPredictionController : MonoBehaviour
 
     private void Awake()
     {
-        if (player == null)
-            player = GetComponent<Player>();
-
         BuildMapData();
 
+        if (player != null)
+            ResetPredictedStateFromPlayer();
+    }
+
+    public void BindPlayer(Player newPlayer)
+    {
+        player = newPlayer;
+        pendingInputs.Clear();
+
+        if (player == null)
+        {
+            Debug.LogError("[ClientPredictionController] BindPlayer 收到空 Player");
+            return;
+        }
+
+        ResetPredictedStateFromPlayer();
+
+        Debug.Log($"[ClientPredictionController] BindPlayer -> {player.name}");
+    }
+
+    private void ResetPredictedStateFromPlayer()
+    {
         Vector3 p = player.transform.position;
 
         predictedState.posX = p.x;
@@ -97,26 +114,85 @@ public class ClientPredictionController : MonoBehaviour
         ApplyPredictedState();
     }
 
-    public void Reconcile(MatchSnapshot snapshot)
+    public void Reconcile(MatchSnapshot snapshot, string localClientId)
     {
         if (snapshot == null)
             return;
 
+        if (player == null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(localClientId))
+            return;
+
+        PlayerSnapshot localPlayer = null;
+
+        if (snapshot.players != null)
+        {
+            foreach (PlayerSnapshot ps in snapshot.players)
+            {
+                if (ps == null)
+                    continue;
+
+                if (ps.clientId == localClientId)
+                {
+                    localPlayer = ps;
+                    break;
+                }
+            }
+        }
+
+        if (localPlayer == null)
+            return;
+
+        // 移除服务器已经处理过的输入
         pendingInputs.RemoveAll(cmd => cmd.seq <= snapshot.lastProcessedSeq);
 
         float beforeX = predictedState.posX;
         float beforeY = predictedState.posY;
 
-        predictedState.posX = snapshot.serverPosX;
-        predictedState.posY = snapshot.serverPosY;
-        predictedState.velX = snapshot.serverVelX;
-        predictedState.velY = snapshot.serverVelY;
-        predictedState.grounded = snapshot.acceptedGrounded;
-        predictedState.jumpCount = snapshot.acceptedJumpCount;
-        predictedState.acceptedDrop = snapshot.acceptedDrop;
-        predictedState.stateName = snapshot.acceptedState;
+        // 服务器位置是 footY，predictedState 里也统一存 footY
+        predictedState.posX = localPlayer.posX;
+        predictedState.posY = localPlayer.posY;
+        predictedState.velX = localPlayer.velX;
+        predictedState.velY = localPlayer.velY;
+        predictedState.grounded = localPlayer.grounded;
+        predictedState.jumpCount = localPlayer.jumpCount;
+        predictedState.stateName = localPlayer.state;
 
-        foreach (var cmd in pendingInputs)
+        bool serverForcedState =
+            localPlayer.isDead ||
+            localPlayer.state == "Dead" ||
+            localPlayer.state == "Respawn" ||
+            localPlayer.state == "Hitstun";
+
+        bool recentlyHit =
+            localPlayer.lastHitTick >= 0 &&
+            snapshot.tick - localPlayer.lastHitTick < 12;
+
+        if (serverForcedState || recentlyHit)
+        {
+            // 被击飞、死亡、复活等待期间，服务器是绝对权威。
+            // 不 replay pending input，否则本地会把自己预测到错误高度。
+            pendingInputs.Clear();
+
+            if (debugLog)
+            {
+                Debug.Log(
+                    $"[Reconcile] SERVER FORCED local={localClientId} " +
+                    $"state={localPlayer.state} isDead={localPlayer.isDead} " +
+                    $"tick={snapshot.tick} lastHitTick={localPlayer.lastHitTick} " +
+                    $"pos=({localPlayer.posX:F3},{localPlayer.posY:F3}) " +
+                    $"vel=({localPlayer.velX:F3},{localPlayer.velY:F3})"
+                );
+            }
+
+            ApplyPredictedState();
+            return;
+        }
+
+        // 普通移动状态才 replay 未确认输入
+        foreach (PlayerInputCmd cmd in pendingInputs)
         {
             Simulate(ref predictedState, cmd);
         }
@@ -126,23 +202,40 @@ public class ClientPredictionController : MonoBehaviour
             new Vector2(predictedState.posX, predictedState.posY)
         );
 
-        if (debugLog)
+        if (error > snapThreshold)
         {
-            Debug.Log(
-                $"[Reconcile] ack={snapshot.lastProcessedSeq} " +
-                $"pending={pendingInputs.Count} " +
-                $"server=({snapshot.serverPosX:F3},{snapshot.serverPosY:F3}) " +
-                $"replayed=({predictedState.posX:F3},{predictedState.posY:F3}) " +
-                $"error={error:F3} grounded={predictedState.grounded} jumpCount={predictedState.jumpCount} velY={predictedState.velY:F3}"
-            );
-        }
+            if (debugLog)
+            {
+                Debug.LogWarning(
+                    $"[Reconcile] Large error={error:F3}, trust server and clear pending. " +
+                    $"server=({localPlayer.posX:F3},{localPlayer.posY:F3}) " +
+                    $"before=({beforeX:F3},{beforeY:F3})"
+                );
+            }
 
-        if (error > snapThreshold && debugLog)
-        {
-            Debug.Log("[Reconcile] Large error, snap to replayed result.");
+            pendingInputs.Clear();
+
+            predictedState.posX = localPlayer.posX;
+            predictedState.posY = localPlayer.posY;
+            predictedState.velX = localPlayer.velX;
+            predictedState.velY = localPlayer.velY;
+            predictedState.grounded = localPlayer.grounded;
+            predictedState.jumpCount = localPlayer.jumpCount;
+            predictedState.stateName = localPlayer.state;
         }
 
         ApplyPredictedState();
+
+        if (debugLog)
+        {
+            Debug.Log(
+                $"[Reconcile] local={localClientId} tick={snapshot.tick} " +
+                $"ack={snapshot.lastProcessedSeq} pending={pendingInputs.Count} " +
+                $"state={predictedState.stateName} " +
+                $"pos=({predictedState.posX:F3},{predictedState.posY:F3}) " +
+                $"vel=({predictedState.velX:F3},{predictedState.velY:F3})"
+            );
+        }
     }
 
     public PredictedPlayerState GetPredictedState()
@@ -150,21 +243,17 @@ public class ClientPredictionController : MonoBehaviour
         return predictedState;
     }
 
-    public bool CanJumpDebug()
-    {
-        return predictedState.grounded || predictedState.jumpCount < MaxJumpCount;
-    }
-
     private void ApplyPredictedState()
     {
         if (player == null)
             return;
 
-        float displayY = FootYToTransformY(predictedState.posY);
-        logicPos = new Vector3(predictedState.posX, displayY, player.transform.position.z);
+        float displayY = predictedState.posY + playerHalfHeight;
 
-        // 关键：根节点直接放逻辑位置，不在这里做视觉平滑
-        player.SetLogicalPosition(logicPos.x, logicPos.y);
+        player.SetLogicalPosition(
+            predictedState.posX,
+            displayY
+        );
 
         player.ApplyServerState(
             predictedState.stateName,
@@ -172,7 +261,6 @@ public class ClientPredictionController : MonoBehaviour
             predictedState.jumpCount
         );
     }
-
     private void Simulate(ref PredictedPlayerState state, PlayerInputCmd cmd)
     {
         float inputX = Mathf.Clamp(cmd.moveX, -1f, 1f);
@@ -182,24 +270,18 @@ public class ClientPredictionController : MonoBehaviour
 
         state.acceptedDrop = false;
 
-        // 1) 水平
         state.velX = inputX * moveSpeed;
         float nextX = state.posX + state.velX * fixedDt;
 
         if (!HitsWall(nextX, state.posY))
-        {
             state.posX = nextX;
-        }
         else
-        {
             state.velX = 0f;
-        }
 
-        // 2) 先按当前状态刷新 grounded
         RefreshGroundedFromMap(ref state);
 
-        // 3) drop-through
         PlatformData? currentPlatform = GetStandingPlatform(state.posX, state.posY);
+
         if (dropPressed && downHeld)
         {
             if (currentPlatform.HasValue && currentPlatform.Value.kind == "oneway")
@@ -211,7 +293,6 @@ public class ClientPredictionController : MonoBehaviour
                 state.posY -= 0.15f;
             }
         }
-        // 4) jump 前置
         else if (jumpPressed)
         {
             if (state.grounded)
@@ -229,27 +310,15 @@ public class ClientPredictionController : MonoBehaviour
             }
         }
 
-        // 5) 垂直推进
         StepVertical(ref state);
-
-        // 6) 再刷新一次 grounded
         RefreshGroundedFromMap(ref state);
 
-        // 7) grounded 下的水平状态兜底
         if (state.grounded)
         {
             if (Mathf.Abs(inputX) > 0.01f)
                 state.stateName = "Player_MoveState";
             else
                 state.stateName = "Player_IdleState";
-        }
-
-        if (debugLog && jumpPressed)
-        {
-            Debug.Log(
-                $"[Predict Jump] jumpPressed={jumpPressed} grounded={state.grounded} jumpCount={state.jumpCount} " +
-                $"pos=({state.posX:F3},{state.posY:F3}) vel=({state.velX:F3},{state.velY:F3}) state={state.stateName}"
-            );
         }
     }
 
@@ -282,7 +351,35 @@ public class ClientPredictionController : MonoBehaviour
                 state.stateName = "Airborne";
         }
     }
+    public bool CanJumpDebug()
+    {
+        return predictedState.grounded || predictedState.jumpCount < MaxJumpCount;
+    }
 
+    public bool IsGroundedDebug()
+    {
+        return predictedState.grounded;
+    }
+
+    public int JumpCountDebug()
+    {
+        return predictedState.jumpCount;
+    }
+
+    public float PredictedPosXDebug()
+    {
+        return predictedState.posX;
+    }
+
+    public float PredictedPosYDebug()
+    {
+        return predictedState.posY;
+    }
+
+    public float PredictedVelYDebug()
+    {
+        return predictedState.velY;
+    }
     private void StepVertical(ref PredictedPlayerState state)
     {
         PlatformData? standing = GetStandingPlatform(state.posX, state.posY);
@@ -295,6 +392,7 @@ public class ClientPredictionController : MonoBehaviour
         }
 
         state.velY += gravity;
+
         if (state.velY < fallSpeedCap)
             state.velY = fallSpeedCap;
 
@@ -334,7 +432,7 @@ public class ClientPredictionController : MonoBehaviour
         float playerBottom = footY;
         float playerTop = footY + playerHalfHeight * 2f;
 
-        foreach (var wall in mapWalls)
+        foreach (RectColliderData wall in mapWalls)
         {
             bool overlapX = playerRight > wall.xMin && playerLeft < wall.xMax;
             bool overlapY = playerTop > wall.yMin && playerBottom < wall.yMax;
@@ -348,7 +446,7 @@ public class ClientPredictionController : MonoBehaviour
 
     private PlatformData? GetStandingPlatform(float x, float footY)
     {
-        foreach (var platform in mapPlatforms)
+        foreach (PlatformData platform in mapPlatforms)
         {
             if (IsOnPlatform(x, footY, platform))
                 return platform;
@@ -371,7 +469,7 @@ public class ClientPredictionController : MonoBehaviour
     {
         List<PlatformData> candidates = new List<PlatformData>();
 
-        foreach (var platform in mapPlatforms)
+        foreach (PlatformData platform in mapPlatforms)
         {
             bool withinX = (x + playerHalfWidth) >= platform.xMin &&
                            (x - playerHalfWidth) <= platform.xMax;

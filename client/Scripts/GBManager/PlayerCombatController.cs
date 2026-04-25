@@ -7,7 +7,12 @@ public class PlayerCombatController : MonoBehaviour
     private Player player;
 
     public Weapon currentWeapon;
+    [SerializeField] private bool readLocalInput = true;
 
+    public void SetReadLocalInput(bool value)
+    {
+        readLocalInput = value;
+    }
     public void EquipWeapon(Weapon newWeapon)
     {
         currentWeapon = newWeapon;
@@ -27,7 +32,8 @@ public class PlayerCombatController : MonoBehaviour
         {
             return;
         }
-
+        if (!readLocalInput)
+            return;
         bool isAuto = currentWeapon.data.isAutomatic;
         bool isHoldingShoot = player.attackHeld;
 

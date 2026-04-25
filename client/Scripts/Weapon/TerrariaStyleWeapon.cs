@@ -26,33 +26,40 @@ public class TerrariaStyleWeapon : MeleeWeapon
 
     public override void ExecuteAttack()
     {
-        if (Time.time < lastAttackTime + data.baseAttackCooldown) return;
+        if (Time.time < lastAttackTime + data.baseAttackCooldown)
+            return;
+
         base.ExecuteAttack();
 
-        Debug.Log("Melee attack");
+        PlayAttackVisual();
+    }
 
-        // 1. 归位到起手角度
+
+    public override void PlayAttackVisual()
+    {
+        Debug.Log("Melee visual attack");
+
+        transform.DOKill();
+
         transform.localRotation = Quaternion.Euler(0, 0, startAngle);
-
-        // 🌟 核心新增 1：在拔刀的瞬间，把剑缩小回正常尺寸（甚至更小，比如 0.5 倍），为后续的“爆发变大”蓄力
         transform.localScale = Vector3.one;
 
-        // 2. 拔刀！(显示图片)
-        if (weaponRenderer != null) weaponRenderer.enabled = true;
+        if (weaponRenderer == null)
+            weaponRenderer = GetComponentInChildren<SpriteRenderer>();
 
-        // 3. 计算挥砍落点
+        if (weaponRenderer != null)
+            weaponRenderer.enabled = true;
+
         float endAngle = startAngle - swingAngle;
 
-       
         transform.DOLocalRotate(new Vector3(0, 0, endAngle), swingDuration, RotateMode.Fast)
             .SetEase(Ease.OutCubic)
             .OnComplete(() =>
             {
-                // 5. 砍完收刀！(隐藏图片)
-                if (weaponRenderer != null) weaponRenderer.enabled = false;
+                if (weaponRenderer != null)
+                    weaponRenderer.enabled = false;
             });
 
-   
         transform.DOScale(new Vector3(bigScale, bigScale, 1f), swingDuration)
             .SetEase(Ease.OutBack);
     }
