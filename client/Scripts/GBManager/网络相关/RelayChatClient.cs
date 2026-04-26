@@ -3,37 +3,48 @@ using System.Text;
 using System.Threading.Tasks;
 using NativeWebSocket;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
-/// <summary>
-/// 最小可运行 Unity WebSocket 客户端（带网络模拟器）
-/// 增加：按 ack/tick 丢弃旧快照
-/// </summary>
 public class RelayChatClient : MonoBehaviour
 {
     [Header("连接配置")]
     [SerializeField] private string serverUrl = "ws://127.0.0.1:8765";
-    [SerializeField] private string clientId = "Client1";
-    [SerializeField] private string roomId = "demo-room";
-    [SerializeField] private bool autoConnect = true;
-    [SerializeField] private bool autoJoin = true;
+
+    [Tooltip("只作为初始默认值。最终身份必须以服务器 ROOM_STATE / GAME_START 返回为准。")]
+    [SerializeField] private string clientId = "";
+
+    [SerializeField] private string roomId = "";
+
+    [Tooltip("MainMenu 可以 true，只连接服务器；MainGame 建议 false，由 MainGameNetworkBootstrap 控制。")]
+    [SerializeField] private bool autoConnect = false;
+
+    [Tooltip("MainMenu 必须 false。MainGame 也建议 false，由 MainGameNetworkBootstrap 控制。")]
+    [SerializeField] private bool autoJoin = false;
 
     [Header("调试")]
     [SerializeField] private bool debugNetworkLog = true;
     [SerializeField] private int logEveryNInputs = 10;
 
     [Header("Network Simulation")]
-    [SerializeField] private bool simulateNetwork = false;   // 先关掉排查
+    [SerializeField] private bool simulateNetwork = false;
     [SerializeField] private int outgoingDelayMs = 120;
     [SerializeField] private int incomingDelayMs = 120;
     [SerializeField] private int jitterMs = 20;
     [SerializeField, Range(0f, 1f)] private float outgoingDropRate = 0f;
     [SerializeField, Range(0f, 1f)] private float incomingDropRate = 0f;
 
+    public string ClientId => clientId;
+    public string RoomId => roomId;
+    public bool IsConnected => websocket != null && websocket.State == WebSocketState.Open;
+    public bool HasJoinedRoom => hasJoinedRoom;
+
+    public event Action<RoomStatePayload> OnRoomStateReceived;
+    public event Action<GameStartPayload> OnGameStartReceived;
+
     private WebSocket websocket;
     private bool hasJoinedRoom;
-    private int sentInputCount;
 
-    // 关键：客户端只接受更新的快照
+    private int sentInputCount;
     private int latestAppliedAck = -1;
     private int latestAppliedTick = -1;
 
@@ -51,32 +62,92 @@ public class RelayChatClient : MonoBehaviour
         public string payload;
     }
 
+    [Serializable]
+    private class ChatPayload
+    {
+        public string text;
+    }
+   
     private void Start()
     {
+        ApplyNetworkSessionToLocalFields();
+
+        Debug.Log(
+            $"[RelayChatClient] Start object={gameObject.name}, " +
+            $"clientId={clientId}, roomId={roomId}, " +
+            $"autoConnect={autoConnect}, autoJoin={autoJoin}"
+        );
+
         if (autoConnect)
-        {
             _ = Connect();
+    }
+
+    private void ApplyNetworkSessionToLocalFields()
+    {
+        if (NetworkSession.Instance == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(NetworkSession.Instance.serverUrl))
+            serverUrl = NetworkSession.Instance.serverUrl;
+
+        if (!string.IsNullOrWhiteSpace(NetworkSession.Instance.roomId))
+            roomId = NetworkSession.Instance.roomId;
+
+        if (!string.IsNullOrWhiteSpace(NetworkSession.Instance.clientId))
+            clientId = NetworkSession.Instance.clientId;
+    }
+
+    public void ConfigureIdentity(string newServerUrl, string newClientId, string newRoomId)
+    {
+        if (!string.IsNullOrWhiteSpace(newServerUrl))
+            serverUrl = newServerUrl.Trim();
+
+        if (newClientId != null)
+            clientId = newClientId.Trim();
+
+        if (newRoomId != null)
+            roomId = newRoomId.Trim().ToUpper();
+
+        if (debugNetworkLog)
+        {
+            Debug.Log(
+                $"[RelayChatClient] ConfigureIdentity " +
+                $"server={serverUrl}, client={clientId}, room={roomId}"
+            );
         }
-        Debug.Log($"[RelayChatClient] Start on {gameObject.name}, clientId={clientId}");
     }
 
     public async Task Connect()
     {
         if (websocket != null &&
-            (websocket.State == WebSocketState.Open || websocket.State == WebSocketState.Connecting))
+            (websocket.State == WebSocketState.Open ||
+             websocket.State == WebSocketState.Connecting))
         {
-            Debug.LogWarning($"[{clientId}] WebSocket 已连接或正在连接中。");
+            if (debugNetworkLog)
+                Debug.LogWarning($"[{clientId}] WebSocket 已连接或正在连接中。");
+
             return;
         }
+
+        ApplyNetworkSessionToLocalFields();
 
         websocket = new WebSocket(serverUrl);
 
         websocket.OnOpen += () =>
         {
             Debug.Log($"[{clientId}] 已连接到服务端: {serverUrl}");
+
             if (autoJoin)
             {
-                _ = SendJoinRoom();
+                ApplyNetworkSessionToLocalFields();
+
+                if (string.IsNullOrWhiteSpace(roomId))
+                {
+                    Debug.LogWarning($"[{clientId}] autoJoin=true 但 roomId 为空，跳过 JOIN_ROOM。");
+                    return;
+                }
+
+                _ = SendJoinRoomManual(clientId, roomId);
             }
         };
 
@@ -101,21 +172,192 @@ public class RelayChatClient : MonoBehaviour
         await websocket.Connect();
     }
 
-    private async Task SendJoinRoom()
+    private async Task EnsureConnected()
+    {
+        if (websocket != null && websocket.State == WebSocketState.Open)
+            return;
+
+        if (websocket != null && websocket.State == WebSocketState.Connecting)
+        {
+            await WaitUntilSocketOpen();
+            return;
+        }
+
+        await Connect();
+        await WaitUntilSocketOpen();
+    }
+
+    private async Task WaitUntilSocketOpen(int timeoutMs = 3000)
+    {
+        int elapsed = 0;
+
+        while (websocket != null &&
+               websocket.State == WebSocketState.Connecting &&
+               elapsed < timeoutMs)
+        {
+            await Task.Delay(50);
+            elapsed += 50;
+        }
+
+        if (websocket == null || websocket.State != WebSocketState.Open)
+        {
+            Debug.LogWarning($"[{clientId}] WebSocket 等待 Open 超时，当前状态={websocket?.State}");
+        }
+    }
+
+    public async Task SendCreateRoom()
+    {
+        await EnsureConnected();
+
+        if (!EnsureSocketOpen())
+            return;
+
+        // 创建新房间时，本地先清掉旧房间状态。
+        // 最终 clientId/roomId 等服务器 ROOM_STATE 返回后覆盖。
+        roomId = "";
+        clientId = "";
+        hasJoinedRoom = false;
+
+        if (NetworkSession.Instance != null)
+            NetworkSession.Instance.Clear();
+
+        var msg = new NetMessage
+        {
+            type = "CREATE_ROOM",
+            roomId = "",
+            clientId = "",
+            payload = "{}"
+        };
+
+        await SendJson(msg, bypassSimulation: false);
+
+        if (debugNetworkLog)
+            Debug.Log("[RelayChatClient] SEND CREATE_ROOM");
+    }
+
+    public async Task SendJoinRoomManual(string wantedClientId, string wantedRoomId)
+    {
+        await EnsureConnected();
+
+        if (!EnsureSocketOpen())
+            return;
+
+        // Lobby 阶段 wantedClientId 可以为空，让服务器分配 Client1 / Client2。
+        // MainGame 重连阶段会传入 NetworkSession.clientId。
+        if (wantedClientId != null)
+            clientId = wantedClientId.Trim();
+
+        if (wantedRoomId != null)
+            roomId = wantedRoomId.Trim().ToUpper();
+
+        if (string.IsNullOrWhiteSpace(roomId))
+        {
+            Debug.LogWarning($"[{clientId}] JOIN_ROOM 失败：roomId 为空。");
+            return;
+        }
+
+        var msg = new NetMessage
+        {
+            type = "JOIN_ROOM",
+            roomId = roomId,
+            clientId = clientId,
+            payload = "{}"
+        };
+
+        await SendJson(msg, bypassSimulation: false);
+
+        if (debugNetworkLog)
+        {
+            Debug.Log(
+                $"[{clientId}] SEND JOIN_ROOM room={roomId}, " +
+                $"requestedClient={clientId}"
+            );
+        }
+    }
+
+    public async Task SendReady(bool ready)
     {
         if (!EnsureSocketOpen())
             return;
 
-        var join = new NetMessage
+        if (string.IsNullOrWhiteSpace(roomId))
         {
-            type = "JOIN_ROOM",
-            roomId = roomId,
-            clientId = clientId
+            Debug.LogWarning($"[{clientId}] READY 失败：roomId 为空。");
+            return;
+        }
+
+        var payload = new ReadyPayload
+        {
+            ready = ready
         };
 
-        await SendJson(join, bypassSimulation: false);
-        hasJoinedRoom = true;
-        Debug.Log($"[{clientId}] 已发送 JOIN_ROOM，room={roomId}");
+        var msg = new NetMessage
+        {
+            type = "READY",
+            roomId = roomId,
+            clientId = clientId,
+            payload = JsonUtility.ToJson(payload)
+        };
+
+        await SendJson(msg, bypassSimulation: false);
+
+        if (debugNetworkLog)
+            Debug.Log($"[{clientId}] SEND READY ready={ready}");
+    }
+
+    public async Task SendStartGame()
+    {
+        if (!EnsureSocketOpen())
+            return;
+
+        if (string.IsNullOrWhiteSpace(roomId))
+        {
+            Debug.LogWarning($"[{clientId}] START_GAME 失败：roomId 为空。");
+            return;
+        }
+
+        var msg = new NetMessage
+        {
+            type = "START_GAME",
+            roomId = roomId,
+            clientId = clientId,
+            payload = "{}"
+        };
+
+        await SendJson(msg, bypassSimulation: false);
+
+        if (debugNetworkLog)
+            Debug.Log($"[{clientId}] SEND START_GAME room={roomId}");
+    }
+
+    public async Task LeaveRoom()
+    {
+        if (!EnsureSocketOpen())
+        {
+            hasJoinedRoom = false;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(roomId))
+        {
+            hasJoinedRoom = false;
+            return;
+        }
+
+        var leave = new NetMessage
+        {
+            type = "LEAVE_ROOM",
+            roomId = roomId,
+            clientId = clientId,
+            payload = "{}"
+        };
+
+        await SendJson(leave, bypassSimulation: false);
+
+        hasJoinedRoom = false;
+
+        if (debugNetworkLog)
+            Debug.Log($"[{clientId}] SEND LEAVE_ROOM room={roomId}");
     }
 
     public async Task SendChat(string messageText)
@@ -135,54 +377,23 @@ public class RelayChatClient : MonoBehaviour
             return;
         }
 
+        var payload = new ChatPayload
+        {
+            text = messageText
+        };
+
         var chat = new NetMessage
         {
             type = "CHAT",
             roomId = roomId,
             clientId = clientId,
-            text = messageText
+            payload = JsonUtility.ToJson(payload)
         };
 
         await SendJson(chat, bypassSimulation: false);
-        Debug.Log($"[{clientId}] 已发送 CHAT -> Server: {messageText}");
-    }
 
-    public async Task LeaveRoom()
-    {
-        if (!EnsureSocketOpen())
-            return;
-
-        if (!hasJoinedRoom)
-        {
-            Debug.LogWarning($"[{clientId}] 当前不在房间中，无需 LEAVE_ROOM。");
-            return;
-        }
-
-        var leave = new NetMessage
-        {
-            type = "LEAVE_ROOM",
-            roomId = roomId,
-            clientId = clientId
-        };
-
-        await SendJson(leave, bypassSimulation: false);
-        hasJoinedRoom = false;
-        Debug.Log($"[{clientId}] 已发送 LEAVE_ROOM，room={roomId}");
-    }
-
-    public async Task Disconnect()
-    {
-        if (websocket == null)
-            return;
-
-        if (websocket.State == WebSocketState.Open || websocket.State == WebSocketState.Connecting)
-        {
-            await websocket.Close();
-        }
-
-        websocket = null;
-        hasJoinedRoom = false;
-        Debug.Log($"[{clientId}] 已执行 Disconnect。");
+        if (debugNetworkLog)
+            Debug.Log($"[{clientId}] SEND CHAT -> Server: {messageText}");
     }
 
     public async Task SendInput(PlayerInputCmd cmd)
@@ -202,12 +413,35 @@ public class RelayChatClient : MonoBehaviour
         };
 
         sentInputCount++;
-        if (debugNetworkLog && (sentInputCount == 1 || sentInputCount % Mathf.Max(1, logEveryNInputs) == 0))
+
+        if (debugNetworkLog &&
+            (sentInputCount == 1 || sentInputCount % Mathf.Max(1, logEveryNInputs) == 0))
         {
-            Debug.Log($"[{clientId}] SEND INPUT #{sentInputCount} seq={cmd.seq} payload={msg.payload}");
+            Debug.Log(
+                $"[{clientId}] SEND INPUT #{sentInputCount} " +
+                $"seq={cmd.seq} tick={cmd.tick} payload={msg.payload}"
+            );
         }
 
         await SendJson(msg, bypassSimulation: false);
+    }
+
+    public async Task Disconnect()
+    {
+        if (websocket == null)
+            return;
+
+        if (websocket.State == WebSocketState.Open ||
+            websocket.State == WebSocketState.Connecting)
+        {
+            await websocket.Close();
+        }
+
+        websocket = null;
+        hasJoinedRoom = false;
+
+        if (debugNetworkLog)
+            Debug.Log($"[{clientId}] 已执行 Disconnect。");
     }
 
     private async Task SendJson(NetMessage message, bool bypassSimulation)
@@ -229,19 +463,18 @@ public class RelayChatClient : MonoBehaviour
         if (UnityEngine.Random.value < outgoingDropRate)
         {
             if (debugNetworkLog)
-            {
                 Debug.LogWarning($"[{clientId}] [NETSIM] OUT DROP type={message.type}");
-            }
+
             return;
         }
 
         int delay = GetSimulatedDelay(outgoingDelayMs, jitterMs);
+
         if (delay > 0)
         {
             if (debugNetworkLog)
-            {
                 Debug.Log($"[{clientId}] [NETSIM] OUT delay={delay}ms type={message.type}");
-            }
+
             await Task.Delay(delay);
         }
 
@@ -267,51 +500,206 @@ public class RelayChatClient : MonoBehaviour
     private async Task HandleIncomingMessageAsync(string json)
     {
         if (debugNetworkLog)
-        {
             Debug.Log($"[{clientId}] RECV RAW {json}");
+
+        NetMessage msg;
+
+        try
+        {
+            msg = JsonUtility.FromJson<NetMessage>(json);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[{clientId}] 解析顶层消息失败: {ex.Message}\nRaw={json}");
+            return;
         }
 
-        var msg = JsonUtility.FromJson<NetMessage>(json);
-        if (msg == null || string.IsNullOrEmpty(msg.type))
+        if (msg == null || string.IsNullOrWhiteSpace(msg.type))
             return;
 
         switch (msg.type)
         {
+            case "ROOM_STATE":
+                {
+                    RoomStatePayload state;
+
+                    try
+                    {
+                        state = JsonUtility.FromJson<RoomStatePayload>(msg.payload);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[{clientId}] 解析 ROOM_STATE 失败: {ex.Message}\nPayload={msg.payload}");
+                        return;
+                    }
+
+                    if (state == null)
+                        return;
+
+                    ApplyRoomStateToClient(state, "ROOM_STATE");
+                    OnRoomStateReceived?.Invoke(state);
+
+                    if (debugNetworkLog)
+                    {
+                        Debug.Log(
+                            $"[{clientId}] ROOM_STATE room={state.roomId} " +
+                            $"localClientId={state.localClientId} " +
+                            $"slot={state.localSlotNo} " +
+                            $"isHost={state.localIsHost} " +
+                            $"canStart={state.canStart}"
+                        );
+                    }
+
+                    return;
+                }
+
+            case "GAME_START":
+                {
+                    GameStartPayload start;
+
+                    try
+                    {
+                        start = JsonUtility.FromJson<GameStartPayload>(msg.payload);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[{clientId}] 解析 GAME_START 失败: {ex.Message}\nPayload={msg.payload}");
+                        return;
+                    }
+
+                    if (start == null)
+                        return;
+
+                    ApplyGameStartToClient(start);
+                    OnGameStartReceived?.Invoke(start);
+
+                    string sceneName = string.IsNullOrWhiteSpace(start.sceneName)
+                        ? "MainGame"
+                        : start.sceneName;
+
+                    if (debugNetworkLog)
+                    {
+                        Debug.Log(
+                            $"[{clientId}] GAME_START -> LoadScene {sceneName}, " +
+                            $"sessionClient={NetworkSession.Instance?.clientId}, " +
+                            $"slot={NetworkSession.Instance?.slotNo}"
+                        );
+                    }
+
+                    SceneManager.LoadScene(sceneName);
+                    return;
+                }
+
             case "SNAPSHOT":
                 {
-                    var snapshot = JsonUtility.FromJson<MatchSnapshot>(msg.payload);
+                    MatchSnapshot snapshot;
+
+                    try
+                    {
+                        snapshot = JsonUtility.FromJson<MatchSnapshot>(msg.payload);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[{clientId}] 解析 SNAPSHOT payload 失败: {ex.Message}\nPayload={msg.payload}");
+                        return;
+                    }
+
                     if (snapshot == null)
                         return;
 
                     if (debugNetworkLog)
                     {
                         Debug.Log(
-                            $"[{clientId}] SNAPSHOT RAW tick={snapshot.tick} " +
-                            $"ack={snapshot.lastProcessedSeq} state={snapshot.acceptedState} " +
-                            $"grounded={snapshot.acceptedGrounded} jumpCount={snapshot.acceptedJumpCount} " +
-                            $"drop={snapshot.acceptedDrop} pos=({snapshot.serverPosX}, {snapshot.serverPosY}) " +
-                            $"vel=({snapshot.serverVelX}, {snapshot.serverVelY})"
+                            $"[{clientId}] SNAPSHOT RAW tick={snapshot.tick} ack={snapshot.lastProcessedSeq} " +
+                            $"players={(snapshot.players != null ? snapshot.players.Length : 0)} " +
+                            $"projectiles={(snapshot.projectiles != null ? snapshot.projectiles.Length : 0)} " +
+                            $"events={(snapshot.events != null ? snapshot.events.Length : 0)} " +
+                            $"reject={snapshot.rejectReason}"
                         );
                     }
 
                     await DispatchSnapshotWithSimulation(snapshot);
-                    break;
+                    return;
                 }
 
             case "SERVER_BROADCAST":
                 {
                     if (debugNetworkLog)
-                    {
                         Debug.Log($"[{clientId}] SERVER_BROADCAST from={msg.fromClientId} text={msg.text}");
-                    }
-                    break;
+
+                    return;
                 }
 
             case "ERROR":
                 {
                     Debug.LogError($"[{clientId}] SERVER ERROR: {msg.error}");
-                    break;
+                    return;
                 }
+
+            default:
+                {
+                    if (debugNetworkLog)
+                        Debug.Log($"[{clientId}] UNHANDLED MSG type={msg.type}");
+
+                    return;
+                }
+        }
+    }
+
+    private void ApplyRoomStateToClient(RoomStatePayload state, string reason)
+    {
+        if (state == null)
+            return;
+
+        roomId = state.roomId;
+
+        // 关键：服务器返回的 localClientId 永远覆盖本地旧 clientId。
+        // 这里不能写成“只有空才赋值”。
+        if (!string.IsNullOrWhiteSpace(state.localClientId))
+            clientId = state.localClientId;
+
+        hasJoinedRoom =
+            !string.IsNullOrWhiteSpace(roomId) &&
+            !string.IsNullOrWhiteSpace(clientId);
+
+        if (NetworkSession.Instance != null)
+            NetworkSession.Instance.ApplyRoomState(state);
+
+        if (debugNetworkLog)
+        {
+            Debug.Log(
+                $"[RelayChatClient] ApplyRoomState reason={reason} " +
+                $"room={roomId}, client={clientId}, joined={hasJoinedRoom}, " +
+                $"sessionClient={NetworkSession.Instance?.clientId}, " +
+                $"slot={NetworkSession.Instance?.slotNo}"
+            );
+        }
+    }
+
+    private void ApplyGameStartToClient(GameStartPayload start)
+    {
+        if (start == null)
+            return;
+
+        roomId = start.roomId;
+
+        if (!string.IsNullOrWhiteSpace(start.localClientId))
+            clientId = start.localClientId;
+
+        hasJoinedRoom =
+            !string.IsNullOrWhiteSpace(roomId) &&
+            !string.IsNullOrWhiteSpace(clientId);
+
+        if (NetworkSession.Instance != null)
+            NetworkSession.Instance.ApplyGameStart(start);
+
+        if (debugNetworkLog)
+        {
+            Debug.Log(
+                $"[RelayChatClient] ApplyGameStart " +
+                $"room={roomId}, client={clientId}, joined={hasJoinedRoom}, " +
+                $"scene={start.sceneName}"
+            );
         }
     }
 
@@ -326,19 +714,18 @@ public class RelayChatClient : MonoBehaviour
         if (UnityEngine.Random.value < incomingDropRate)
         {
             if (debugNetworkLog)
-            {
                 Debug.LogWarning($"[{clientId}] [NETSIM] IN DROP tick={snapshot.tick}");
-            }
+
             return;
         }
 
         int delay = GetSimulatedDelay(incomingDelayMs, jitterMs);
+
         if (delay > 0)
         {
             if (debugNetworkLog)
-            {
                 Debug.Log($"[{clientId}] [NETSIM] IN delay={delay}ms tick={snapshot.tick}");
-            }
+
             await Task.Delay(delay);
         }
 
@@ -347,7 +734,6 @@ public class RelayChatClient : MonoBehaviour
 
     private void ApplySnapshot(MatchSnapshot snapshot)
     {
-        // 关键：按 ack/tick 丢弃旧快照
         bool isOlder =
             snapshot.lastProcessedSeq < latestAppliedAck ||
             (snapshot.lastProcessedSeq == latestAppliedAck && snapshot.tick <= latestAppliedTick);
@@ -361,6 +747,7 @@ public class RelayChatClient : MonoBehaviour
                     $"latestTick={latestAppliedTick} latestAck={latestAppliedAck}"
                 );
             }
+
             return;
         }
 
@@ -370,11 +757,11 @@ public class RelayChatClient : MonoBehaviour
         if (debugNetworkLog)
         {
             Debug.Log(
-                $"[{clientId}] APPLY SNAPSHOT tick={snapshot.tick} " +
-                $"ack={snapshot.lastProcessedSeq} state={snapshot.acceptedState} " +
-                $"grounded={snapshot.acceptedGrounded} jumpCount={snapshot.acceptedJumpCount} " +
-                $"drop={snapshot.acceptedDrop} pos=({snapshot.serverPosX}, {snapshot.serverPosY}) " +
-                $"vel=({snapshot.serverVelX}, {snapshot.serverVelY})"
+                $"[{clientId}] APPLY SNAPSHOT tick={snapshot.tick} ack={snapshot.lastProcessedSeq} " +
+                $"players={(snapshot.players != null ? snapshot.players.Length : 0)} " +
+                $"projectiles={(snapshot.projectiles != null ? snapshot.projectiles.Length : 0)} " +
+                $"events={(snapshot.events != null ? snapshot.events.Length : 0)} " +
+                $"reject={snapshot.rejectReason}"
             );
         }
 
@@ -384,10 +771,9 @@ public class RelayChatClient : MonoBehaviour
     private int GetSimulatedDelay(int baseDelayMs, int jitterRangeMs)
     {
         int jitter = 0;
+
         if (jitterRangeMs > 0)
-        {
             jitter = UnityEngine.Random.Range(-jitterRangeMs, jitterRangeMs + 1);
-        }
 
         int finalDelay = baseDelayMs + jitter;
         return Mathf.Max(0, finalDelay);
@@ -400,6 +786,7 @@ public class RelayChatClient : MonoBehaviour
             Debug.LogWarning($"[{clientId}] WebSocket 未连接，当前状态不可发送。");
             return false;
         }
+
         return true;
     }
 
@@ -421,10 +808,10 @@ public class RelayChatClient : MonoBehaviour
         _ = Connect();
     }
 
-    [ContextMenu("Send Test Chat")]
-    private void SendTestChatFromMenu()
+    [ContextMenu("Create Room")]
+    private void CreateRoomFromMenu()
     {
-        _ = SendChat($"Hello from {clientId} @ {DateTime.Now:HH:mm:ss}");
+        _ = SendCreateRoom();
     }
 
     [ContextMenu("Leave Room")]

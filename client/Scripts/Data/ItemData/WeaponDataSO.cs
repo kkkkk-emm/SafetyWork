@@ -50,4 +50,7 @@ public class WeaponDataSO : EquipmentDataSO
     [Tooltip("子弹存活时间(秒)。配合 bulletSpeed 共同决定武器射程")]
     public float bulletLifeTime = 2f; // 默认2秒
 
+
+    public string weaponId;
+    public string bulletId;
 }

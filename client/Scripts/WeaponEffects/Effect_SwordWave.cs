@@ -28,7 +28,7 @@ public class Effect_SwordWave : WeaponEffectSO
         if (proj != null)
         {
             // 完美复用源武器数据，朝着绝对正前方飞去！
-            proj.SetupProjectile(wielder, sourceData, forwardDir,wielder.entity_Combat.whatIsTarget,wielder.currentWeaponInstance.runtimeEffects);
+            proj.SetupProjectile(wielder, sourceData, forwardDir,wielder.entity_Combat.whatIsTarget,wielder.currentWeaponInstance.RuntimeEffects);
         }
     }
 }
