@@ -1,0 +1,11 @@
+# TGS WebSocket 服务和 smoke_test_tgs.py 客户端连接。
+websockets>=12.0
+
+# DES-CBC-PKCS7。当前课程协议要求 DES，因此这里使用 pycryptodome。
+pycryptodome>=3.20.0
+
+# MySQL 访问；db.py 使用 PyMySQL DictCursor 返回字典行。
+pymysql>=1.1.0
+
+# smoke_test_tgs.py 会复用 as/crypto_utils.py 构造 AS 登录请求。
+cryptography>=42.0.0
