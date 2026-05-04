@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set
 
 from game_config import (
     DEFAULT_BASE_KNOCKBACK,
@@ -42,6 +42,15 @@ class RectCollider:
 
 @dataclass
 class ClientSession:
+    # ── Kerberos 认证状态 ──
+    authenticated: bool = False
+    session_id: Optional[str] = None       # GS 签发的业务会话 ID
+    user_id: Optional[int] = None          # user_account.user_id
+    username: Optional[str] = None
+    kc_gs: Optional[bytes] = None          # 与该客户端共享的 DES 会话密钥
+    login_gen: int = 0
+
+    # ── 房间/对战状态 ──
     client_id: Optional[str] = None
     room_id: Optional[str] = None
 

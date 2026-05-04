@@ -506,6 +506,8 @@ class TgsServer:
         """校验 Authenticator 的 ts 和 nonce。"""
 
         try:
+            if require_string_field(auth, "type") != TYPE_TGS_REQ:
+                raise ProtocolError("TYPE_MISMATCH")
             auth_ts = require_int_field(auth, "ts")
             auth_nonce = require_string_field(auth, "nonce")
         except ProtocolError as exc:
@@ -578,6 +580,8 @@ class TgsServer:
         """校验 TGS_REQ.payload 中的目标服务和响应 nonce。"""
 
         try:
+            if require_string_field(payload, "type") != TYPE_TGS_REQ:
+                raise ProtocolError("TYPE_MISMATCH")
             service = require_string_field(payload, "service")
             nonce = require_string_field(payload, "nonce")
         except ProtocolError as exc:

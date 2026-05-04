@@ -150,6 +150,7 @@ async def main() -> None:
     auth = des_encrypt_object(
         kc_tgs,
         {
+            "type": TYPE_TGS_REQ,
             "ts": now_ms(),
             "nonce": auth_nonce,
         },
@@ -157,6 +158,7 @@ async def main() -> None:
     payload = des_encrypt_object(
         kc_tgs,
         {
+            "type": TYPE_TGS_REQ,
             "service": GS_SERVICE_NAME,
             "nonce": payload_nonce,
         },
