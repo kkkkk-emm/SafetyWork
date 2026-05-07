@@ -105,6 +105,10 @@ GS_JSON_PAYLOAD_TYPES = {
     TYPE_READY,
     TYPE_START_GAME,
 }
+# 重连宽限期（秒）
+RECONNECT_GRACE_SECONDS = 30
+# 对战开始倒计时（毫秒）
+MATCH_COUNTDOWN_MS = 3000
 LOOT_SPAWN_INTERVAL_TICKS = int(2.0 / SIM_DT)
 LOOT_PICKUP_RADIUS = 0.75
 # -----------------------------
