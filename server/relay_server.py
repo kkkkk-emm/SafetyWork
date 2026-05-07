@@ -219,62 +219,126 @@ class RelayServer:
 
     async def handle_message(self, websocket: Any, raw_message: str) -> None:
         session = self.sessions.get(websocket)
+
         if session is None:
             return
+
         try:
             data = json.loads(raw_message)
         except json.JSONDecodeError:
             await self.send_error(websocket, "INVALID_JSON")
             return
+
         msg_type = str(data.get("type", "")).strip()
+
         if not msg_type:
             await self.send_error(websocket, "MISSING_TYPE")
             return
 
-        # ── 认证门禁: 未认证的连接只能发 GS_AUTH / RECONNECT_REQ ──
-        if not session.authenticated:
-            if msg_type not in PRE_AUTH_TYPES:
-                await self.send_error(websocket, "NOT_AUTHENTICATED")
+        # ------------------------------------------------------------
+        # GS_AUTH 特殊处理：
+        # 1. 未认证时：正常走 handle_gs_auth
+        # 2. 已认证时：说明客户端重复发了 GS_AUTH，直接忽略，避免进入已认证路由后报 UNSUPPORTED_TYPE
+        # ------------------------------------------------------------
+
+        if msg_type == TYPE_GS_AUTH:
+            if session.authenticated:
+                print(
+                    f"[GS_AUTH_DUP] already authenticated "
+                    f"userId={getattr(session, 'user_id', None)} "
+                    f"client={getattr(session, 'client_id', None)} "
+                    f"sessionId={getattr(session, 'session_id', None)}"
+                )
                 return
-            if msg_type == TYPE_GS_AUTH:
+
+            try:
                 await self.handle_gs_auth(websocket, data)
-                return
-            if msg_type == TYPE_RECONNECT_REQ:
-                await self.handle_reconnect(websocket, data)
-                return
-            await self.send_error(websocket, "UNSUPPORTED_TYPE")
+            except ProtocolError as exc:
+                await self.send_error(websocket, exc.error_code)
+            except GsRequestError as exc:
+                await self.send_error(websocket, exc.error_code)
+            except CryptoError as exc:
+                await self.send_error(websocket, str(exc))
+            except Exception as exc:
+                print(f"GS_AUTH internal error: {exc}", file=sys.stderr)
+                await self.send_error(websocket, "INTERNAL_ERROR")
+
             return
 
-        # ── 已认证消息路由 ──
+        # ------------------------------------------------------------
+        # RECONNECT_REQ 特殊处理：
+        # 重连可以在未认证状态下发。
+        # 如果已认证连接又发 RECONNECT_REQ，也直接让专门函数处理。
+        # ------------------------------------------------------------
+
+        if msg_type == TYPE_RECONNECT_REQ:
+            try:
+                await self.handle_reconnect(websocket, data)
+            except ProtocolError as exc:
+                await self.send_error(websocket, exc.error_code)
+            except GsRequestError as exc:
+                await self.send_error(websocket, exc.error_code)
+            except CryptoError as exc:
+                await self.send_error(websocket, str(exc))
+            except Exception as exc:
+                print(f"RECONNECT internal error: {exc}", file=sys.stderr)
+                await self.send_error(websocket, "INTERNAL_ERROR")
+
+            return
+
+        # ------------------------------------------------------------
+        # 认证门禁：
+        # 除 GS_AUTH / RECONNECT_REQ 之外，未认证连接不能发业务消息。
+        # ------------------------------------------------------------
+
+        if not session.authenticated:
+            await self.send_error(websocket, "NOT_AUTHENTICATED")
+            return
+
+        # ------------------------------------------------------------
+        # 已认证消息路由
+        # ------------------------------------------------------------
+
         try:
             if msg_type == TYPE_HEARTBEAT_REQ:
                 await self.handle_heartbeat(websocket, data)
+
             elif msg_type == TYPE_ROOM_CREATE_REQ:
                 await self.handle_create_room(websocket, data)
+
             elif msg_type == TYPE_ROOM_JOIN_REQ:
                 await self.handle_join_room(websocket, data)
+
             elif msg_type == TYPE_ROOM_READY_REQ:
                 await self.handle_ready(websocket, data)
+
             elif msg_type == TYPE_ROOM_START_REQ:
                 await self.handle_start_game(websocket, data)
+
             elif msg_type == TYPE_INPUT:
                 await self.handle_input(websocket, data)
+
             elif msg_type == TYPE_CHAT:
                 await self.handle_chat(websocket, data)
+
             elif msg_type == TYPE_LEAVE_ROOM:
                 await self.handle_leave_room(websocket, data)
+
             else:
                 await self.send_error(websocket, f"UNSUPPORTED_TYPE: {msg_type}")
+
         except ProtocolError as exc:
             await self.send_error(websocket, exc.error_code)
+
         except GsRequestError as exc:
             await self.send_error(websocket, exc.error_code)
+
         except CryptoError as exc:
             await self.send_error(websocket, str(exc))
+
         except Exception as exc:
             print(f"GS internal error: {exc}", file=sys.stderr)
             await self.send_error(websocket, "INTERNAL_ERROR")
-
     # ═══════════════════════════════════════════════════════════════
     # GS_AUTH handler (阶段三第3-4步)
     # ═══════════════════════════════════════════════════════════════
@@ -890,6 +954,7 @@ class RelayServer:
                 "clientId": cid,
                 "slotNo": int(player["slotNo"]),
                 "ready": bool(player["ready"]),
+                "isHost": cid == host_client_id,
                 "online": bool(player.get("online", True)),
             })
             if cid == host_client_id:
