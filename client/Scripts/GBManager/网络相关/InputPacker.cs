@@ -35,7 +35,6 @@ public class InputPacker : MonoBehaviour
         if (relayClient == null)
             relayClient = FindFirstObjectByType<RelayChatClient>();
 
-        // 等 MainGamePlayerBinder 来绑定本地 Player。
         enabled = false;
     }
 
@@ -127,13 +126,9 @@ public class InputPacker : MonoBehaviour
         if (relayClient == null || player == null || input == null)
             return;
 
-        if (!relayClient.HasJoinedRoom)
+        if (!relayClient.CanSendGameplayMessages)
             return;
 
-        // ------------------------------------------------------------
-        // 1. 每个 FixedUpdate 都读输入 + 本地预测
-        // 这保证本地操作手感不是 20/30Hz。
-        // ------------------------------------------------------------
         Vector2 move = input.Player.Movement.ReadValue<Vector2>();
         Vector2 aim = ReadAimDirection();
 
@@ -147,6 +142,7 @@ public class InputPacker : MonoBehaviour
         bool downHeld = move.y < -0.5f;
         bool dropPressed = downHeld && jumpPressed;
 
+        // 本地预测仍然每个 FixedUpdate 跑，保证手感。
         player.ApplyNetworkInputFrame(
             move,
             jumpPressed,
@@ -157,22 +153,15 @@ public class InputPacker : MonoBehaviour
             dropPressed
         );
 
-        // ------------------------------------------------------------
-        // 2. 网络发包限频
-        // 本地预测每帧跑，但 SendInput 不每帧发。
-        // ------------------------------------------------------------
         sendTimer += Time.fixedDeltaTime;
 
         if (sendTimer < sendInterval)
         {
-            // 不能清 jumpPressedBuffered / attackPressedBuffered。
-            // 否则两个发包间隔之间的瞬时按键会被吃掉。
+            // 瞬时输入不能在没发包时清掉，否则会吃输入。
             return;
         }
 
-        // 不用 while 补包，避免卡顿后一帧连发很多包。
         sendTimer = 0f;
-
         currentTick++;
 
         PredictedPlayerState predicted = predictionController != null
@@ -227,7 +216,6 @@ public class InputPacker : MonoBehaviour
 
         _ = relayClient.SendInput(cmd);
 
-        // 只有真正发出网络包后，才清瞬时输入。
         jumpPressedBuffered = false;
         attackPressedBuffered = false;
     }

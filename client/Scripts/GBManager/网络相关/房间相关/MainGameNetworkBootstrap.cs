@@ -36,7 +36,7 @@ public class MainGameNetworkBootstrap : MonoBehaviour
     {
         try
         {
-            debugStatus = "Finding RelayChatClient singleton...";
+            debugStatus = "Finding persistent RelayChatClient...";
             Log(debugStatus);
 
             if (relayClient == null)
@@ -47,7 +47,7 @@ public class MainGameNetworkBootstrap : MonoBehaviour
 
             if (relayClient == null)
             {
-                debugStatus = "ERROR: RelayChatClient not found in MainGame.";
+                debugStatus = "ERROR: RelayChatClient not found.";
                 Debug.LogError("[MainGameNetworkBootstrap] " + debugStatus);
                 return;
             }
@@ -59,13 +59,22 @@ public class MainGameNetworkBootstrap : MonoBehaviour
                 return;
             }
 
+            AuthSession.EnsureExists();
+
+            NetworkSession.Instance.SyncFromAuthSession();
+
             string roomId = NetworkSession.Instance.roomId;
             string clientId = NetworkSession.Instance.clientId;
             string serverUrl = NetworkSession.Instance.serverUrl;
+            string sessionId = AuthSession.Ctx.sessionId;
 
             debugStatus =
-                $"Session room={roomId}, client={clientId}, server={serverUrl}, " +
-                $"relayConnected={relayClient.IsConnected}, relayJoined={relayClient.HasJoinedRoom}";
+                $"Session room={roomId}, localClient={clientId}, server={serverUrl}, " +
+                $"sessionId={sessionId}, slot={NetworkSession.Instance.slotNo}, " +
+                $"host={NetworkSession.Instance.isHost}, " +
+                $"relayConnected={relayClient.IsConnected}, " +
+                $"relayJoined={relayClient.HasJoinedRoom}, " +
+                $"gsAuthed={relayClient.IsGsAuthenticated}";
 
             Log(debugStatus);
 
@@ -73,6 +82,7 @@ public class MainGameNetworkBootstrap : MonoBehaviour
             {
                 debugStatus =
                     $"ERROR: Missing room/client. room={roomId}, client={clientId}";
+
                 Debug.LogError("[MainGameNetworkBootstrap] " + debugStatus);
                 return;
             }
@@ -113,20 +123,29 @@ public class MainGameNetworkBootstrap : MonoBehaviour
 
             if (!alreadyJoinedSameRoom)
             {
-                debugStatus = $"Sending MainGame JOIN_ROOM client={clientId}, room={roomId}";
+                debugStatus =
+                    $"Relay not joined same room, send JOIN_ROOM. " +
+                    $"client={clientId}, room={roomId}, sessionId={sessionId}";
+
                 Log(debugStatus);
 
-                await relayClient.SendJoinRoomManual(clientId, roomId);
+                await relayClient.SendJoinRoomManual(
+                    clientId,
+                    roomId
+                );
             }
             else
             {
-                debugStatus = $"Already joined room={roomId} as {clientId}, skip JOIN.";
+                debugStatus =
+                    $"Already joined same room. client={clientId}, room={roomId}. Skip JOIN.";
                 Log(debugStatus);
             }
 
             debugStatus =
                 $"Bootstrap done. connected={relayClient.IsConnected}, " +
-                $"joined={relayClient.HasJoinedRoom}, client={relayClient.ClientId}, room={relayClient.RoomId}";
+                $"joined={relayClient.HasJoinedRoom}, " +
+                $"client={relayClient.ClientId}, room={relayClient.RoomId}, " +
+                $"sessionId={AuthSession.Ctx.sessionId}";
 
             Log(debugStatus);
         }
@@ -136,7 +155,6 @@ public class MainGameNetworkBootstrap : MonoBehaviour
             Debug.LogError("[MainGameNetworkBootstrap] Exception:\n" + ex);
         }
     }
-
     private async Task<bool> WaitUntilConnected(float timeoutSeconds)
     {
         float startTime = Time.realtimeSinceStartup;
