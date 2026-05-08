@@ -23,7 +23,37 @@ public class ClientReceiver : MonoBehaviour
     {
         Instance = this;
     }
+    private void ConfigureRemoteInterpolators()
+    {
+        ConfigurePlayerInterpolator(player1, localClientId != "Client1");
+        ConfigurePlayerInterpolator(player2, localClientId != "Client2");
+    }
 
+    private void ConfigurePlayerInterpolator(Player player, bool shouldBeRemote)
+    {
+        if (player == null)
+            return;
+
+        RemotePlayerInterpolator interpolator =
+            player.GetComponent<RemotePlayerInterpolator>();
+
+        if (shouldBeRemote)
+        {
+            if (interpolator == null)
+                interpolator = player.gameObject.AddComponent<RemotePlayerInterpolator>();
+
+            interpolator.Clear();
+            interpolator.enabled = true;
+        }
+        else
+        {
+            if (interpolator != null)
+            {
+                interpolator.Clear();
+                interpolator.enabled = false;
+            }
+        }
+    }
     public void SetLocalClientId(string id)
     {
         localClientId = id;
@@ -42,7 +72,7 @@ public class ClientReceiver : MonoBehaviour
         predictionController = prediction;
 
         SetLocalClientId(clientId);
-
+        ConfigureRemoteInterpolators();
         Debug.Log(
             $"[ClientReceiver] BindPlayers " +
             $"p1={(player1 != null ? player1.name : "null")} " +
@@ -136,10 +166,8 @@ public class ClientReceiver : MonoBehaviour
             }
             else
             {
-                ApplyRemotePlayerSnapshot(target, ps);
-               
+                ApplyRemotePlayerSnapshot(target, ps, snapshot.tick);
             }
-
             ApplyCommonPlayerState(target, ps);
 
             if (debugSnapshotLog)
@@ -154,22 +182,40 @@ public class ClientReceiver : MonoBehaviour
         }
     }
 
-    private void ApplyRemotePlayerSnapshot(Player target, PlayerSnapshot ps)
+    private void ApplyRemotePlayerSnapshot(Player target, PlayerSnapshot ps, int snapshotTick)
     {
+        if (target == null || ps == null)
+            return;
+
         float displayY = ps.posY + playerHalfHeight;
 
-        target.ApplyServerPosition(
+        RemotePlayerInterpolator interpolator =
+            target.GetComponent<RemotePlayerInterpolator>();
+
+        if (interpolator == null)
+            interpolator = target.gameObject.AddComponent<RemotePlayerInterpolator>();
+
+        interpolator.enabled = true;
+
+        interpolator.PushServerFrame(
+            snapshotTick,
             ps.posX,
             displayY,
-            ps.velY
+            ps.velX,
+            ps.velY,
+            ps.state,
+            ps.grounded,
+            ps.jumpCount
         );
 
+        // 状态、朝向、瞄准可以先即时同步。
+        // 位置不要在这里直接 ApplyServerPosition。
         target.ApplyServerState(
             ps.state,
             ps.grounded,
             ps.jumpCount
         );
-        //target.ApplyServerWeapon(ps.equippedWeaponId);
+
         target.ApplyNetworkAim(ps.aimX, ps.aimY);
     }
     private void ApplyCommonPlayerState(Player target, PlayerSnapshot ps)
@@ -489,9 +535,15 @@ public class ClientReceiver : MonoBehaviour
 
         if (p != null)
         {
+            RemotePlayerInterpolator interpolator =
+                p.GetComponent<RemotePlayerInterpolator>();
+
+            if (interpolator != null)
+                interpolator.Clear();
+
             p.ApplyServerPosition(
                 data.x,
-                  data.y + playerHalfHeight,
+                data.y + playerHalfHeight,
                 0f
             );
 
