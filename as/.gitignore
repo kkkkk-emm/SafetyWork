@@ -3,10 +3,12 @@ __pycache__/
 *.py[cod]
 
 # Local AS key material. The public key is intentionally not ignored so the
-# team can decide whether to commit/distribute as/as_public_key.pem.
+# team can decide whether to commit/distribute as/as_public_key.json.
 as_private_key.pem
+as_private_key.json
 k_tgs_base64.txt
 *.private.pem
+*.private.json
 keys/
 
 # Local environment files may contain K_TGS_BASE64 or private key paths.

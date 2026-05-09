@@ -132,7 +132,7 @@ Service Ticket 明文字段：
 ```powershell
 $env:AS_URL='ws://127.0.0.1:9000'
 $env:TGS_URL='ws://127.0.0.1:9001'
-$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.pem'
+$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.json'
 $env:AUTH_GS_SERVICE_NAME='game/ws@127.0.0.1:8765'
 $env:K_GS_BASE64='与TGS服务相同的K_GS_BASE64'
 python .\tgs\smoke_test_tgs.py
@@ -143,3 +143,7 @@ python .\tgs\smoke_test_tgs.py
 ```text
 TGS smoke test passed
 ```
+# Handwritten crypto note
+
+TGS now uses project-local handwritten DES through `shared_crypto/`.
+The AS public key used by smoke tests is `as/as_public_key.json`.

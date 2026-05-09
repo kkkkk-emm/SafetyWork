@@ -2,6 +2,8 @@ from math import cos, radians, sin, atan2
 from typing import Dict, List
 
 from game_config import EFFECT_DB
+from game_debug import debug_print
+from game_effect_ids import get_effect_cfg, normalize_effect_id, normalize_effect_list
 from game_models import ServerProjectile
 
 try:
@@ -10,58 +12,6 @@ except ImportError:
     DEBUG_PROJECTILE = False
     DEBUG_ATTACK = False
     DEBUG_HIT = True
-# ------------------------------------------------------------
-# Effect id 兼容层
-# 解决 Unity 发 hoversplit / delayedexplosion / swordwave
-# 但服务器 DB 写 hover_split / delayed_explosion / sword_wave 的问题
-# ------------------------------------------------------------
-
-EFFECT_ID_ALIASES = {
-    "hoversplit": "hover_split",
-    "hover_split": "hover_split",
-    "Effect_HoverSplit": "hover_split",
-
-    "delayedexplosion": "delayed_explosion",
-    "delayed_explosion": "delayed_explosion",
-    "Effect_DelayedExplosion": "delayed_explosion",
-
-    "swordwave": "sword_wave",
-    "sword_wave": "sword_wave",
-    "Effect_SwordWave": "sword_wave",
-
-    "parry": "parry",
-    "Effect_Parry": "parry",
-}
-
-def debug_print(enabled: bool, message: str) -> None:
-    if enabled:
-        print(message)
-def normalize_effect_id(effect_id: str) -> str:
-    if effect_id is None:
-        return ""
-
-    return EFFECT_ID_ALIASES.get(effect_id, effect_id)
-
-
-def normalize_effect_list(effect_ids: List[str]) -> List[str]:
-    result = []
-
-    if effect_ids is None:
-        return result
-
-    for effect_id in effect_ids:
-        normalized = normalize_effect_id(effect_id)
-        if normalized and normalized not in result:
-            result.append(normalized)
-
-    return result
-
-
-def get_effect_cfg(effect_id: str):
-    normalized = normalize_effect_id(effect_id)
-    return normalized, EFFECT_DB.get(normalized)
-
-
 # ------------------------------------------------------------
 # Projectile spawned
 # ------------------------------------------------------------

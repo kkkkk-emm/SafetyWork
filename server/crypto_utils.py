@@ -1,47 +1,33 @@
-"""GS 游戏服务器使用的密码学工具函数。
+"""Crypto helpers for GS using project-local handwritten DES code."""
 
-本模块集中实现 GS 需要的基础操作:
-- Base64 编解码。
-- DES-CBC-PKCS7 加解密 JSON 对象。
-- 8 字节 DES 会话密钥生成。
-- nonce 生成 (用于防重放)。
-"""
+from __future__ import annotations
 
 import base64
 import json
 import os
+from pathlib import Path
 import secrets
+import sys
 import time
 from typing import Any, Dict
 
-try:
-    from Crypto.Cipher import DES
-    from Crypto.Util.Padding import pad, unpad
-except ImportError as exc:
-    DES = None
-    pad = None
-    unpad = None
-    _DES_IMPORT_ERROR = exc
-else:
-    _DES_IMPORT_ERROR = None
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-DES_KEY_BYTES = 8
-DES_BLOCK_BYTES = 8
+from shared_crypto.des import DES_BLOCK_BYTES, DES_KEY_BYTES, cbc_decrypt, cbc_encrypt
 
 
 class CryptoError(RuntimeError):
-    """密码学处理错误。"""
     pass
 
 
 def b64encode(raw: bytes) -> str:
-    """把字节串编码为 Base64 文本。"""
     return base64.b64encode(raw).decode("ascii")
 
 
 def b64decode(value: str) -> bytes:
-    """把 Base64 文本解码为字节串。"""
     try:
         return base64.b64decode(value.encode("ascii"), validate=True)
     except Exception as exc:
@@ -49,27 +35,22 @@ def b64decode(value: str) -> bytes:
 
 
 def generate_des_key() -> bytes:
-    """生成 8 字节 DES key。"""
     return os.urandom(DES_KEY_BYTES)
 
 
 def generate_nonce() -> str:
-    """生成协议 nonce (防重放)。"""
     return secrets.token_urlsafe(18)
 
 
 def now_ms() -> int:
-    """返回当前 Unix 时间戳毫秒数。"""
     return int(time.time() * 1000)
 
 
 def _json_bytes(obj: Dict[str, Any]) -> bytes:
-    """把 JSON 对象稳定序列化成 UTF-8 字节。"""
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def _json_object(raw: bytes) -> Dict[str, Any]:
-    """把 UTF-8 JSON 字节解析成 dict。"""
     try:
         obj = json.loads(raw.decode("utf-8"))
     except Exception as exc:
@@ -79,38 +60,26 @@ def _json_object(raw: bytes) -> Dict[str, Any]:
     return obj
 
 
-def _require_des() -> None:
-    """确认 pycryptodome 的 DES 实现可用。"""
-    if DES is None:
-        raise CryptoError(
-            "pycryptodome is required for DES-CBC support"
-        ) from _DES_IMPORT_ERROR
-
-
 def des_encrypt_object(key: bytes, obj: Dict[str, Any]) -> str:
-    """用 DES-CBC-PKCS7 加密 JSON 对象。返回 Base64(iv + ciphertext)。"""
-    _require_des()
     if len(key) != DES_KEY_BYTES:
         raise CryptoError("INVALID_DES_KEY_LENGTH")
     iv = os.urandom(DES_BLOCK_BYTES)
-    cipher = DES.new(key, DES.MODE_CBC, iv)
-    ciphertext = cipher.encrypt(pad(_json_bytes(obj), DES_BLOCK_BYTES))
+    ciphertext = cbc_encrypt(key, iv, _json_bytes(obj))
     return b64encode(iv + ciphertext)
 
 
 def des_decrypt_object(key: bytes, ciphertext_b64: str) -> Dict[str, Any]:
-    """解密 DES-CBC-PKCS7 加密的 JSON 对象。"""
-    _require_des()
     if len(key) != DES_KEY_BYTES:
         raise CryptoError("INVALID_DES_KEY_LENGTH")
+
     raw = b64decode(ciphertext_b64)
     if len(raw) <= DES_BLOCK_BYTES:
         raise CryptoError("INVALID_DES_CIPHERTEXT")
+
     iv = raw[:DES_BLOCK_BYTES]
     ciphertext = raw[DES_BLOCK_BYTES:]
-    cipher = DES.new(key, DES.MODE_CBC, iv)
     try:
-        plaintext = unpad(cipher.decrypt(ciphertext), DES_BLOCK_BYTES)
+        plaintext = cbc_decrypt(key, iv, ciphertext)
     except ValueError as exc:
         raise CryptoError("INVALID_DES_PADDING") from exc
     return _json_object(plaintext)

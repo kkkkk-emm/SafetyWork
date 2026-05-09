@@ -82,8 +82,8 @@ python .\as\seed_auth_keys.py
 
 默认生成：
 
-- `as/as_private_key.pem`：AS RSA 私钥，服务端使用，不要提交。
-- `as/as_public_key.pem`：AS RSA 公钥，客户端和测试脚本使用，可按团队需要提交或分发。
+- `as/as_private_key.json`：AS RSA 私钥，服务端使用，不要提交。
+- `as/as_public_key.json`：AS RSA 公钥，客户端和测试脚本使用，可按团队需要提交或分发。
 - `as/k_tgs_base64.txt`：`K_TGS` 的 Base64 文本，服务端启动时写入环境变量，不要提交。
 
 如果文件已存在，脚本会拒绝覆盖，避免误轮换密钥。确实需要重新生成时使用：
@@ -103,7 +103,7 @@ python .\as\seed_auth_keys.py --overwrite
 | `AUTH_DB_USER` | `root` | MySQL 用户名。 |
 | `AUTH_DB_NAME` | `safety_auth` | 已初始化的认证数据库名。 |
 | `K_TGS_BASE64` | `xxxxxxxxxxx=` | TGS 长期 DES key 的 Base64 文本，解码后必须 8 字节。 |
-| `AS_RSA_PRIVATE_KEY_PATH` 或 `AS_RSA_PRIVATE_PEM` | `.\as\as_private_key.pem` | AS RSA 私钥来源，二选一。推荐使用文件路径。 |
+| `AS_RSA_PRIVATE_KEY_PATH` 或 `AS_RSA_PRIVATE_PEM` | `.\as\as_private_key.json` | AS RSA 私钥来源，二选一。推荐使用文件路径。 |
 
 ### 可选变量
 
@@ -128,7 +128,7 @@ $env:AUTH_DB_USER='root'
 $env:AUTH_DB_PASSWORD='你的MySQL密码'
 $env:AUTH_DB_NAME='safety_auth'
 
-$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.pem'
+$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.json'
 $env:K_TGS_BASE64=(Get-Content .\as\k_tgs_base64.txt -Raw).Trim()
 
 $env:AS_HOST='0.0.0.0'
@@ -161,7 +161,7 @@ ws://127.0.0.1:9000
 
 ```powershell
 $env:AS_URL='ws://127.0.0.1:9000'
-$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.pem'
+$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.json'
 python .\as\smoke_test_as.py
 ```
 
@@ -201,7 +201,7 @@ AS smoke test passed
 {
   "type": "REGISTER_REQ",
   "clientId": "cli-001",
-  "payload": "Base64(RSA-OAEP-SHA256(JSON))"
+  "payload": "Base64(RSA-RAW-BLOCKS(JSON))"
 }
 ```
 
@@ -233,7 +233,7 @@ RSA 解密前的 payload 明文 JSON：
 {
   "type": "AS_REQ",
   "clientId": "cli-001",
-  "payload": "Base64(RSA-OAEP-SHA256(JSON))"
+  "payload": "Base64(RSA-RAW-BLOCKS(JSON))"
 }
 ```
 
@@ -295,7 +295,7 @@ PBKDF2-HMAC-SHA256(password, salt, iter, dklen=32) 的前 8 字节
 {
   "type": "CHANGE_PASSWORD_REQ",
   "clientId": "cli-001",
-  "payload": "Base64(RSA-OAEP-SHA256(JSON))"
+  "payload": "Base64(RSA-RAW-BLOCKS(JSON))"
 }
 ```
 
@@ -376,15 +376,14 @@ RSA 解密前的 payload 明文 JSON：
 依赖问题：
 
 - `No module named 'websockets'`：安装 `requirements.txt`。
-- `No module named 'Crypto'`：缺少 `pycryptodome`，安装 `requirements.txt`。
 - `pymysql is required`：缺少 `pymysql`，安装 `requirements.txt`。
 
 ## 安全注意事项
 
-- 不要提交 `as/as_private_key.pem`。
+- 不要提交 `as/as_private_key.json`。
 - 不要提交 `as/k_tgs_base64.txt`。
 - 如果泄露 AS 私钥或 `K_TGS`，应重新生成密钥，并清理旧票据和测试数据。
-- 公钥 `as/as_public_key.pem` 可以分发给客户端，但客户端必须确保使用的是当前 AS 对应的公钥。
+- 公钥 `as/as_public_key.json` 可以分发给客户端，但客户端必须确保使用的是当前 AS 对应的公钥。
 - `K_TGS_BASE64` 是 AS 和 TGS 之间的长期共享密钥；后续实现 TGS 时必须使用同一个值才能解密 TGT。
 
 ## 推荐启动流程
@@ -408,7 +407,7 @@ $env:AUTH_DB_PORT='3306'
 $env:AUTH_DB_USER='root'
 $env:AUTH_DB_PASSWORD='你的MySQL密码'
 $env:AUTH_DB_NAME='safety_auth'
-$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.pem'
+$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.json'
 $env:K_TGS_BASE64=(Get-Content .\as\k_tgs_base64.txt -Raw).Trim()
 
 # 5. 启动 AS
@@ -419,6 +418,10 @@ python .\as\as_server.py
 
 ```powershell
 $env:AS_URL='ws://127.0.0.1:9000'
-$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.pem'
+$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.json'
 python .\as\smoke_test_as.py
 ```
+# Handwritten crypto note
+
+AS now uses project-local handwritten DES/RSA implementations in `shared_crypto/`.
+Run `python .\as\seed_auth_keys.py --overwrite` to regenerate JSON RSA keys.

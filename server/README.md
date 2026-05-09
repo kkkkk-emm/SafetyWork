@@ -551,7 +551,7 @@ $env:AUTH_GS_SERVICE_NAME='game/ws@127.0.0.1:8765'
 # ============================================
 # 5. 终端 1: 启动 AS（端口 9000）
 # ============================================
-$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.pem'
+$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.json'
 $env:K_TGS_BASE64=(Get-Content .\as\k_tgs_base64.txt -Raw).Trim()
 $env:AS_HOST='0.0.0.0'
 $env:AS_PORT='9000'
@@ -607,3 +607,7 @@ GS 实现了简化版的大乱斗对战逻辑：
 - **受击硬直**：受到攻击后有短暂硬直（`hitstun`），期间不能移动/跳跃/攻击。
 
 所有武器、效果、地图参数可在 `game_config.py` 中配置。
+# Handwritten crypto note
+
+GS now uses project-local handwritten DES through `shared_crypto/`.
+Regenerate AS RSA JSON keys with `python .\as\seed_auth_keys.py --overwrite`.

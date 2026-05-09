@@ -3,17 +3,23 @@ import math
 
 import game_effects
 import game_simulation
+from game_combat_config import (
+    get_bullet_cfg as resolve_bullet_cfg,
+    get_weapon_bullet_id as resolve_weapon_bullet_id,
+    get_weapon_cfg as resolve_weapon_cfg,
+    normalize_special_bullet_id as normalize_bullet_alias,
+    resolve_visual_id as resolve_bullet_visual_id,
+)
 from game_config import (
-    BULLET_DB,
     MELEE_DB,
     PLAYER_HALF_HEIGHT,
     PLAYER_HALF_WIDTH,
     SIM_DT,
-    WEAPON_DB,
     KNOCKBACK_SCALE,
     HITSTUN_BASE_TICKS,
     HITSTUN_PERCENT_FACTOR_TO_TICKS,MAX_PROJECTILES,
 )
+from game_debug import debug_print
 
 # Debug switches are optional.
 # If game_config.py has not defined them yet, these defaults will be used.
@@ -38,15 +44,6 @@ from game_models import (
 )
 
 
-DEFAULT_WEAPON_ID = "手枪"
-DEFAULT_BULLET_ID = "普通子弹"
-
-
-def debug_print(enabled: bool, message: str) -> None:
-    if enabled:
-        print(message)
-
-
 class CombatRuntime:
     def __init__(self) -> None:
         self.projectiles: Dict[int, ServerProjectile] = {}
@@ -63,64 +60,19 @@ class CombatRuntime:
     # ------------------------------------------------------------------
 
     def get_weapon_cfg(self, weapon_id: str) -> dict:
-        if weapon_id in WEAPON_DB:
-            return WEAPON_DB[weapon_id]
-
-        if DEFAULT_WEAPON_ID in WEAPON_DB:
-            debug_print(
-                DEBUG_COMBAT_WARN,
-                f"[COMBAT WARN] weapon_id={weapon_id} not found, fallback={DEFAULT_WEAPON_ID}"
-            )
-            return WEAPON_DB[DEFAULT_WEAPON_ID]
-
-        first_key = next(iter(WEAPON_DB))
-        debug_print(
-            DEBUG_COMBAT_WARN,
-            f"[COMBAT WARN] DEFAULT_WEAPON_ID missing, fallback first weapon={first_key}"
-        )
-        return WEAPON_DB[first_key]
+        return resolve_weapon_cfg(weapon_id)
 
     def get_bullet_cfg(self, bullet_id: str) -> dict:
-        if bullet_id in BULLET_DB:
-            return BULLET_DB[bullet_id]
-
-        if DEFAULT_BULLET_ID in BULLET_DB:
-            debug_print(
-                DEBUG_COMBAT_WARN,
-                f"[COMBAT WARN] bullet_id={bullet_id} not found, fallback={DEFAULT_BULLET_ID}"
-            )
-            return BULLET_DB[DEFAULT_BULLET_ID]
-
-        first_key = next(iter(BULLET_DB))
-        debug_print(
-            DEBUG_COMBAT_WARN,
-            f"[COMBAT WARN] DEFAULT_BULLET_ID missing, fallback first bullet={first_key}"
-        )
-        return BULLET_DB[first_key]
+        return resolve_bullet_cfg(bullet_id)
 
     def get_weapon_bullet_id(self, weapon_cfg: dict) -> str:
-        return str(weapon_cfg.get("bullet_id", DEFAULT_BULLET_ID))
+        return resolve_weapon_bullet_id(weapon_cfg)
 
     def resolve_visual_id(self, bullet_id: str, bullet_cfg: dict) -> str:
-        return str(bullet_cfg.get("visual_id", bullet_id))
+        return resolve_bullet_visual_id(bullet_id, bullet_cfg)
 
     def normalize_special_bullet_id(self, bullet_id: str) -> str:
-        """
-        兼容旧 effect 里可能传进来的英文 projectile_kind。
-        """
-        if bullet_id in ("sword_wave", "swordwave", "SwordWave"):
-            return "剑气"
-
-        if bullet_id in ("pistol_bullet", "normal_gun"):
-            return "普通子弹"
-
-        if bullet_id in ("sniper_bullet", "sniper"):
-            return "狙击子弹"
-
-        if bullet_id in ("heavy_machine_bullet", "machine_gun"):
-            return "机枪子弹"
-
-        return bullet_id
+        return normalize_bullet_alias(bullet_id)
 
     # ------------------------------------------------------------------
     # Events

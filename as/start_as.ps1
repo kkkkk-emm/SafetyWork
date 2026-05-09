@@ -4,7 +4,7 @@ $env:AUTH_DB_USER='root'
 $env:AUTH_DB_PASSWORD='811019lin'
 $env:AUTH_DB_NAME='SafetyWork'
 
-$env:AS_RSA_PRIVATE_KEY_PATH='E:\github\SafetyWork\as\as_private_key.pem'
+$env:AS_RSA_PRIVATE_KEY_PATH='E:\github\SafetyWork\as\as_private_key.json'
 $env:K_TGS_BASE64=(Get-Content 'E:\github\SafetyWork\as\k_tgs_base64.txt' -Raw).Trim()
 
 $env:AS_HOST='0.0.0.0'
