@@ -598,26 +598,6 @@ class CombatRuntime:
 
         return False
 
-    def projectile_hits_world(self, x: float, y: float, radius: float) -> bool:
-        left = x - radius
-        right = x + radius
-        bottom = y - radius
-        top = y + radius
-
-        for wall in game_simulation.MAP_WALLS:
-            overlap_x = right > wall.x_min and left < wall.x_max
-            overlap_y = top > wall.y_min and bottom < wall.y_max
-            if overlap_x and overlap_y:
-                return True
-
-        for platform in game_simulation.MAP_PLATFORMS:
-            overlap_x = right > platform.x_min and left < platform.x_max
-            overlap_y = abs(y - platform.y) <= radius
-            if overlap_x and overlap_y:
-                return True
-
-        return False
-
     def find_projectile_swept_hit_player(
         self,
         sessions: Dict[object, ClientSession],
@@ -662,42 +642,6 @@ class CombatRuntime:
                     f"to=({next_x:.2f},{next_y:.2f}) "
                     f"aabb=({left:.2f},{right:.2f},{bottom:.2f},{top:.2f})",
                 )
-                return session
-
-        return None
-
-    def find_projectile_hit_player(
-        self,
-        sessions: Dict[object, ClientSession],
-        x: float,
-        y: float,
-        radius: float,
-        owner_client_id: str,
-    ) -> Optional[ClientSession]:
-        for session in sessions.values():
-            if session.client_id is None:
-                continue
-
-            if session.client_id == owner_client_id:
-                continue
-
-            if session.is_dead:
-                continue
-
-            player_left = session.pos_x - PLAYER_HALF_WIDTH
-            player_right = session.pos_x + PLAYER_HALF_WIDTH
-            player_bottom = session.pos_y
-            player_top = session.pos_y + PLAYER_HALF_HEIGHT * 2.0
-
-            proj_left = x - radius
-            proj_right = x + radius
-            proj_bottom = y - radius
-            proj_top = y + radius
-
-            overlap_x = proj_right > player_left and proj_left < player_right
-            overlap_y = proj_top > player_bottom and proj_bottom < player_top
-
-            if overlap_x and overlap_y:
                 return session
 
         return None

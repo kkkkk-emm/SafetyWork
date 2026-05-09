@@ -2,7 +2,7 @@
 
 本目录实现独立的 TGS(Ticket Granting Server)。TGS 通过 WebSocket 接收 `TGS_REQ`，验证 AS 签发的 `TGT`，然后签发访问 GS 的 `Service Ticket` 和 `KcGs`。
 
-当前实现只新增 `tgs/`，不修改现有 `server/` 游戏服务。GS 暂时不会消费 Service Ticket，后续可以在 GS 中单独实现 `GS_AUTH`。
+GS 已完整实现 Kerberos 认证门禁（`GS_AUTH`），可使用 TGS 签发的 Service Ticket 建立加密游戏会话。
 
 ## 目录文件
 
@@ -143,7 +143,5 @@ python .\tgs\smoke_test_tgs.py
 ```text
 TGS smoke test passed
 ```
-# Handwritten crypto note
-
-TGS now uses project-local handwritten DES through `shared_crypto/`.
-The AS public key used by smoke tests is `as/as_public_key.json`.
+密码学实现使用项目本地的 `shared_crypto/` 手写 DES 模块。
+Smoke test 使用 `as/as_public_key.json` 作为 AS 公钥。

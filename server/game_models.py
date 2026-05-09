@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Set
+from typing import List, Optional, Set
 
 from game_config import (
     DEFAULT_BASE_KNOCKBACK,

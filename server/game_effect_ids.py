@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from typing import List
 
-from game_config import EFFECT_DB
-
-
 EFFECT_ID_ALIASES = {
     "hoversplit": "hover_split",
     "hover_split": "hover_split",
@@ -35,8 +32,3 @@ def normalize_effect_list(effect_ids: List[str]) -> List[str]:
         if normalized and normalized not in result:
             result.append(normalized)
     return result
-
-
-def get_effect_cfg(effect_id: str):
-    normalized = normalize_effect_id(effect_id)
-    return normalized, EFFECT_DB.get(normalized)

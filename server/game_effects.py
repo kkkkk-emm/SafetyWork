@@ -3,15 +3,13 @@ from typing import Any, Dict, List
 
 from game_config import EFFECT_DB
 from game_debug import debug_print
-from game_effect_ids import get_effect_cfg, normalize_effect_id, normalize_effect_list
+from game_effect_ids import normalize_effect_list
 from game_models import ServerProjectile
 
 try:
-    from game_config import DEBUG_PROJECTILE, DEBUG_ATTACK, DEBUG_HIT
+    from game_config import DEBUG_PROJECTILE
 except ImportError:
     DEBUG_PROJECTILE = False
-    DEBUG_ATTACK = False
-    DEBUG_HIT = True
 
 EffectConfig = Dict[str, Any]
 

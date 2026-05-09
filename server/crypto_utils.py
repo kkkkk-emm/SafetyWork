@@ -34,10 +34,6 @@ def b64decode(value: str) -> bytes:
         raise CryptoError("INVALID_BASE64") from exc
 
 
-def generate_des_key() -> bytes:
-    return os.urandom(DES_KEY_BYTES)
-
-
 def generate_nonce() -> str:
     return secrets.token_urlsafe(18)
 

@@ -421,7 +421,5 @@ $env:AS_URL='ws://127.0.0.1:9000'
 $env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.json'
 python .\as\smoke_test_as.py
 ```
-# Handwritten crypto note
-
-AS now uses project-local handwritten DES/RSA implementations in `shared_crypto/`.
-Run `python .\as\seed_auth_keys.py --overwrite` to regenerate JSON RSA keys.
+密码学实现使用项目本地的 `shared_crypto/` 手写 DES/RSA/PBKDF2 模块。
+如需重新生成 RSA 密钥：`python .\as\seed_auth_keys.py --overwrite`
