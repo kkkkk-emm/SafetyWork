@@ -50,6 +50,7 @@ PRE_AUTH_TYPES = {TYPE_GS_AUTH, TYPE_RECONNECT_REQ}
 
 class ProtocolError(ValueError):
     """协议层错误，业务层会转换成 ERROR 报文。"""
+
     def __init__(self, error_code: str) -> None:
         super().__init__(error_code)
         self.error_code = error_code

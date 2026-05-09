@@ -6,11 +6,12 @@ from typing import Any, Awaitable
 from crypto_utils import CryptoError
 from gs_errors import GsRequestError
 from gs_protocol import ProtocolError
+from relay_contracts import RelayServerContext
 
 
 class GsErrorHandlingMixin:
     async def run_with_error_response(
-        self,
+        self: RelayServerContext,
         websocket: Any,
         label: str,
         action: Awaitable[Any],

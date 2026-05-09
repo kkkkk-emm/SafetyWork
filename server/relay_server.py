@@ -6,8 +6,10 @@
 3. GS 返回 GS_AUTH_OK (含 sessionId + KcGs 加密的 payload)
 4. 之后所有房间/对战消息的 payload/auth 均用 KcGs 加密
 """
+
 import asyncio
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set
 
@@ -17,11 +19,9 @@ from websockets.exceptions import ConnectionClosed
 import game_simulation
 from game_combat import CombatRuntime
 from game_config import (
-    HOST,
     JUMP_VELOCITY,
     MAX_JUMP_COUNT,
     MOVE_SPEED,
-    PORT,
     RECONNECT_GRACE_SECONDS,
     SIM_DT,
     TYPE_CHAT,
@@ -31,7 +31,7 @@ from game_config import (
     RESPAWN_POINTS,
     RESPAWN_DELAY_TICKS,
 )
-from game_models import ClientSession, InputPayload, Platform
+from game_models import ClientSession, InputPayload, Platform, ServerLoot
 from crypto_utils import (
     DES_KEY_BYTES,
     b64decode,
@@ -66,20 +66,21 @@ from relay_room import RoomLifecycleMixin
 from relay_snapshot import SnapshotBroadcastMixin
 
 
-class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMixin, LootManagerMixin):
-    def __init__(self, host: str = HOST, port: int = PORT) -> None:
-        self.host = host
-        self.port = port
-
+class RelayServer(
+    GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMixin, LootManagerMixin
+):
+    def __init__(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         # ── 配置 / DB / 密钥 ──
         self.db_config = load_db_config()
         self.config = load_gs_config()
+        self.host = host if host is not None else self.config.host
+        self.port = port if port is not None else self.config.port
         self.db = GsDao(self.db_config)
         self.k_gs: Optional[bytes] = None
 
         # ── session 管理 ──
-        self.sessions: Dict[Any, ClientSession] = {}           # websocket -> ClientSession
-        self.sessions_by_id: Dict[str, ClientSession] = {}     # sessionId -> ClientSession
+        self.sessions: Dict[Any, ClientSession] = {}  # websocket -> ClientSession
+        self.sessions_by_id: Dict[str, ClientSession] = {}  # sessionId -> ClientSession
 
         # ── 防重放缓存: key = "{userId}/{clientId}/{nonce}" -> expires_at_ms ──
         self.replay_cache: Dict[str, int] = {}
@@ -96,8 +97,8 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         # ── 对战 ──
         self.tick: int = 0
         self.combat = CombatRuntime()
-        self.room_loots = {}
-        self.room_next_loot_tick = {}
+        self.room_loots: Dict[str, Dict[str, ServerLoot]] = {}
+        self.room_next_loot_tick: Dict[str, int] = {}
         self.next_loot_id = 1
 
     # ═══════════════════════════════════════════════════════════════
@@ -119,8 +120,21 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         print(f"[SERVER] K_GS 已加载  gs_service={self.config.gs_service_name}")
         print(f"[SERVER] SIM_DT={SIM_DT} MOVE_SPEED={MOVE_SPEED}")
         print("=" * 72)
-        async with websockets.serve(self.handle_client, self.host, self.port):
-            await asyncio.Future()
+        maintenance_task = asyncio.create_task(self.maintenance_loop())
+        try:
+            async with websockets.serve(self.handle_client, self.host, self.port):
+                await asyncio.Future()
+        finally:
+            maintenance_task.cancel()
+            try:
+                await maintenance_task
+            except asyncio.CancelledError:
+                pass
+
+    async def maintenance_loop(self) -> None:
+        while True:
+            await asyncio.sleep(5)
+            self.prune_replay_cache(now_ms())
 
     # ═══════════════════════════════════════════════════════════════
     # 连接管理 (含认证门禁)
@@ -134,7 +148,9 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             async for raw_message in websocket:
                 await self.handle_message(websocket, raw_message)
         except ConnectionClosed as close_info:
-            print(f"[CLOSED ] remote={remote} | code={close_info.code} | reason={close_info.reason}")
+            print(
+                f"[CLOSED ] remote={remote} | code={close_info.code} | reason={close_info.reason}"
+            )
         finally:
             await self.cleanup_client(websocket, reason="disconnect")
 
@@ -236,6 +252,7 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             await self.handle_leave_room(websocket, data)
         else:
             await self.send_error(websocket, f"UNSUPPORTED_TYPE: {msg_type}")
+
     # ═══════════════════════════════════════════════════════════════
     # GS_AUTH handler (阶段三第3-4步)
     # ═══════════════════════════════════════════════════════════════
@@ -313,12 +330,16 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
                 "exp": ticket.exp,
             },
         )
-        await websocket.send(make_message(
-            TYPE_GS_AUTH_OK,
-            sessionId=session_id,
-            payload=protected_payload,
-        ))
-        print(f"[GS_AUTH OK] client={client_id} userId={ticket.user_id} sessionId={session_id}")
+        await websocket.send(
+            make_message(
+                TYPE_GS_AUTH_OK,
+                sessionId=session_id,
+                payload=protected_payload,
+            )
+        )
+        print(
+            f"[GS_AUTH OK] client={client_id} userId={ticket.user_id} sessionId={session_id}"
+        )
 
     async def handle_heartbeat(self, websocket: Any, data: Dict[str, Any]) -> None:
         session = self._require_session(websocket)
@@ -336,17 +357,23 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
 
         # HEARTBEAT_REP: payload 中 nonce 回显 HEARTBEAT_REQ 的 nonce
         kc_gs = self._require_kc_gs(session)
-        rep_payload = des_encrypt_object(kc_gs, {
-            "type": TYPE_HEARTBEAT_REP,
-            "sessionId": session.session_id or "",
-            "ts": heartbeat_ts,
-            "nonce": heartbeat_nonce,
-        })
-        await self.send_json(websocket, {
-            "type": TYPE_HEARTBEAT_REP,
-            "sessionId": session.session_id or "",
-            "payload": rep_payload,
-        })
+        rep_payload = des_encrypt_object(
+            kc_gs,
+            {
+                "type": TYPE_HEARTBEAT_REP,
+                "sessionId": session.session_id or "",
+                "ts": heartbeat_ts,
+                "nonce": heartbeat_nonce,
+            },
+        )
+        await self.send_json(
+            websocket,
+            {
+                "type": TYPE_HEARTBEAT_REP,
+                "sessionId": session.session_id or "",
+                "payload": rep_payload,
+            },
+        )
 
     # ═══════════════════════════════════════════════════════════════
     # RECONNECT_REQ / RECONNECT_REP (阶段六)
@@ -458,24 +485,36 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             )
             conn.commit()
 
-        room_status = self.room_states.get(room_id, {}).get("status", "PLAYING") if room_id else "PLAYING"
-        rep_payload = des_encrypt_object(kc_gs, {
-            "type": TYPE_RECONNECT_REP,
-            "ok": True,
-            "sessionId": session_id,
-            "roomId": room_id,
-            "phase": "FINISHED" if room_status == "FINISHED" else "PLAYING",
-            "lastProcessedSeq": old_session.last_seq,
-            "ts": auth_ts,
-            "nonce": auth_nonce,
-        })
-        await self.send_json(websocket, {
-            "type": TYPE_RECONNECT_REP,
-            "sessionId": session_id,
-            "roomId": room_id,
-            "payload": rep_payload,
-        })
-        print(f"[RECONNECT OK] client={client_id} userId={old_session.user_id} sessionId={session_id}")
+        room_status = (
+            self.room_states.get(room_id, {}).get("status", "PLAYING")
+            if room_id
+            else "PLAYING"
+        )
+        rep_payload = des_encrypt_object(
+            kc_gs,
+            {
+                "type": TYPE_RECONNECT_REP,
+                "ok": True,
+                "sessionId": session_id,
+                "roomId": room_id,
+                "phase": "FINISHED" if room_status == "FINISHED" else "PLAYING",
+                "lastProcessedSeq": old_session.last_seq,
+                "ts": auth_ts,
+                "nonce": auth_nonce,
+            },
+        )
+        await self.send_json(
+            websocket,
+            {
+                "type": TYPE_RECONNECT_REP,
+                "sessionId": session_id,
+                "roomId": room_id,
+                "payload": rep_payload,
+            },
+        )
+        print(
+            f"[RECONNECT OK] client={client_id} userId={old_session.user_id} sessionId={session_id}"
+        )
 
         await self.broadcast_room_state(room_id)
         await self.broadcast_snapshot(room_id)
@@ -503,7 +542,8 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
     def _expire_reconnect_grace(self, current_ms: int) -> None:
         """清理过期的重连宽限期。"""
         expired_ids = [
-            sid for sid, info in self.reconnect_grace.items()
+            sid
+            for sid, info in self.reconnect_grace.items()
             if info["expire_ms"] <= current_ms
         ]
         for sid in expired_ids:
@@ -516,20 +556,28 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             # 从房间中移除玩家
             if room_id and client_id:
                 room_state = self.room_states.get(room_id)
-                if room_state is not None and client_id in room_state.get("players", {}):
+                if room_state is not None and client_id in room_state.get(
+                    "players", {}
+                ):
                     room_state["players"].pop(client_id, None)
             # 清理 sessionId 映射
             self.sessions_by_id.pop(sid, None)
             if old_session.user_id is not None:
                 with self.db.connection() as conn:
                     self.db.record_security_event(
-                        conn, user_id=old_session.user_id, username=old_session.username,
-                        event_type="RECONNECT_TIMEOUT", result=False,
-                        client_id=client_id or "", remote_addr=None,
+                        conn,
+                        user_id=old_session.user_id,
+                        username=old_session.username,
+                        event_type="RECONNECT_TIMEOUT",
+                        result=False,
+                        client_id=client_id or "",
+                        remote_addr=None,
                         reason="GRACE_PERIOD_EXPIRED",
                     )
                     conn.commit()
-            print(f"[RECONNECT EXPIRED] sessionId={sid} client={client_id} room={room_id}")
+            print(
+                f"[RECONNECT EXPIRED] sessionId={sid} client={client_id} room={room_id}"
+            )
 
     # ═══════════════════════════════════════════════════════════════
     # 加密 / 校验工具
@@ -546,13 +594,17 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             raise GsRequestError("KEY_NOT_CONFIGURED")
         return session.kc_gs
 
-    def decrypt_auth(self, session: ClientSession, data: Dict[str, Any]) -> Dict[str, Any]:
+    def decrypt_auth(
+        self, session: ClientSession, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Decrypt and validate a session auth object."""
         auth = self.security.decrypt_session_auth(session, data)
         self._expire_reconnect_grace(now_ms())
         return auth
 
-    def decrypt_payload(self, session: ClientSession, data: Dict[str, Any]) -> Dict[str, Any]:
+    def decrypt_payload(
+        self, session: ClientSession, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Decrypt and validate a session payload object."""
         payload = self.security.decrypt_session_payload(session, data)
         self._expire_reconnect_grace(now_ms())
@@ -584,28 +636,54 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
     # Lobby / room state
     # ═══════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _read_float(cmd: Dict[str, Any], field: str, default: float) -> float:
+        try:
+            value = float(cmd.get(field, default))
+        except (TypeError, ValueError) as exc:
+            raise GsRequestError("INVALID_INPUT") from exc
+        if not math.isfinite(value):
+            raise GsRequestError("INVALID_INPUT")
+        return value
+
+    @classmethod
+    def _read_unit_float(cls, cmd: Dict[str, Any], field: str, default: float) -> float:
+        value = cls._read_float(cmd, field, default)
+        return max(-1.0, min(1.0, value))
+
+    @staticmethod
+    def _config_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def parse_input_payload(self, cmd: dict) -> InputPayload:
         effect_ids_raw = cmd.get("equippedEffectIds", [])
-        effect_ids = [str(eid) for eid in effect_ids_raw] if isinstance(effect_ids_raw, list) else []
+        effect_ids = (
+            [str(eid) for eid in effect_ids_raw]
+            if isinstance(effect_ids_raw, list)
+            else []
+        )
         return InputPayload(
             seq=int(cmd.get("seq", 0)),
             tick=int(cmd.get("tick", 0)),
-            move_x=max(-1.0, min(1.0, float(cmd.get("moveX", 0.0)))),
+            move_x=self._read_unit_float(cmd, "moveX", 0.0),
             jump_pressed=bool(cmd.get("jumpPressed", False)),
             down_held=bool(cmd.get("downHeld", False)),
             drop_pressed=bool(cmd.get("dropPressed", False)),
             attack_pressed=bool(cmd.get("attackPressed", False)),
             attack_held=bool(cmd.get("attackHeld", False)),
             attack_released=bool(cmd.get("attackReleased", False)),
-            aim_x=float(cmd.get("aimX", 0.0)),
-            aim_y=float(cmd.get("aimY", 0.0)),
+            aim_x=self._read_unit_float(cmd, "aimX", 0.0),
+            aim_y=self._read_unit_float(cmd, "aimY", 0.0),
             client_state=str(cmd.get("clientState", "Unknown")),
             client_grounded=bool(cmd.get("clientGrounded", False)),
             client_jump_count=int(cmd.get("clientJumpCount", 0)),
-            client_pos_x=float(cmd.get("clientPosX", 0.0)),
-            client_pos_y=float(cmd.get("clientPosY", 0.0)),
-            client_vel_x=float(cmd.get("clientVelX", 0.0)),
-            client_vel_y=float(cmd.get("clientVelY", 0.0)),
+            client_pos_x=self._read_float(cmd, "clientPosX", 0.0),
+            client_pos_y=self._read_float(cmd, "clientPosY", 0.0),
+            client_vel_x=self._read_float(cmd, "clientVelX", 0.0),
+            client_vel_y=self._read_float(cmd, "clientVelY", 0.0),
             equipped_weapon_id=str(cmd.get("equippedWeaponId", "手枪")),
             equipped_effect_ids=effect_ids,
         )
@@ -619,7 +697,9 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             weapon_cfg = WEAPON_DB.get("手枪", {})
         attack_mode = weapon_cfg.get("attack_mode", "ranged")
         auto_fire = bool(weapon_cfg.get("auto_fire", attack_mode == "ranged"))
-        fire_interval_ticks = int(weapon_cfg.get("fire_interval_ticks", 10))
+        fire_interval_ticks = self._config_int(
+            weapon_cfg.get("fire_interval_ticks", 10), 10
+        )
         wants_attack = False
         if cmd.attack_pressed:
             wants_attack = True
@@ -665,17 +745,28 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         if session.last_seq >= 0 and cmd.seq <= session.last_seq:
             reject_reason = f"seq not increasing: {cmd.seq} <= {session.last_seq}"
             print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
-            await self.maybe_broadcast_snapshot(session.room_id, websocket, reject_reason)
+            await self.maybe_broadcast_snapshot(
+                session.room_id, websocket, reject_reason
+            )
             return
 
         # ── 拒绝客户端上传服务端权威字段 (P1-4) ──
-        forbidden_keys = {"damagePercent", "stocks", "isDead", "damage", "hitResult", "killCount"}
+        forbidden_keys = {
+            "damagePercent",
+            "stocks",
+            "isDead",
+            "damage",
+            "hitResult",
+            "killCount",
+        }
         payload_keys = set(payload.keys())
         found_forbidden = payload_keys & forbidden_keys
         if found_forbidden:
             reject_reason = f"forbidden fields in INPUT: {sorted(found_forbidden)}"
             print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
-            await self.maybe_broadcast_snapshot(session.room_id, websocket, reject_reason)
+            await self.maybe_broadcast_snapshot(
+                session.room_id, websocket, reject_reason
+            )
             return
 
         session.last_seq = cmd.seq
@@ -688,7 +779,9 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             session.accepted_grounded = False
             session.accepted_state = "Dead"
             if self.tick >= session.respawn_at_tick and session.stocks > 0:
-                respawn_point = RESPAWN_POINTS.get(session.client_id, {"x": 0.0, "y": 3.0})
+                respawn_point = RESPAWN_POINTS.get(
+                    session.client_id, {"x": 0.0, "y": 3.0}
+                )
                 session.pos_x = float(respawn_point["x"])
                 session.pos_y = float(respawn_point["y"])
                 session.vel_x = 0.0
@@ -704,10 +797,14 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
                 session.last_knockback_y = 0.0
                 session.last_hit_tick = -1
                 session.hitstun_until_tick = -1
-                self.combat.push_event("PLAYER_RESPAWN", {
-                    "clientId": session.client_id,
-                    "x": session.pos_x, "y": session.pos_y,
-                })
+                self.combat.push_event(
+                    "PLAYER_RESPAWN",
+                    {
+                        "clientId": session.client_id,
+                        "x": session.pos_x,
+                        "y": session.pos_y,
+                    },
+                )
             self.combat.step_projectiles(self.sessions, self.tick)
             self.combat.step_melee_hitboxes(self.sessions, self.tick)
             self.maybe_spawn_loot_for_room(session.room_id)
@@ -715,7 +812,9 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             self.check_loot_pickups_for_room(session.room_id)
             self.cleanup_dead_loots_for_room(session.room_id)
             self.tick += 1
-            await self.maybe_broadcast_snapshot(session.room_id, websocket, reject_reason)
+            await self.maybe_broadcast_snapshot(
+                session.room_id, websocket, reject_reason
+            )
             return
 
         # ── 武器 / 瞄准方向 ──
@@ -805,8 +904,11 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         # ── 攻击 ──
         if not in_hitstun and self.should_execute_attack(session, cmd):
             self.combat.execute_attack(
-                attacker=session, aim_x=cmd.aim_x, aim_y=cmd.aim_y,
-                tick=self.tick, sessions=self.sessions,
+                attacker=session,
+                aim_x=cmd.aim_x,
+                aim_y=cmd.aim_y,
+                tick=self.tick,
+                sessions=self.sessions,
             )
 
         # ── 垂直运动 ──
@@ -829,9 +931,13 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         if game_simulation.is_out_of_bounds(session.pos_x, session.pos_y):
             if not session.is_dead:
                 session.stocks -= 1
-                self.combat.push_event("PLAYER_OUT_OF_BOUNDS", {
-                    "clientId": session.client_id, "stocksLeft": session.stocks,
-                })
+                self.combat.push_event(
+                    "PLAYER_OUT_OF_BOUNDS",
+                    {
+                        "clientId": session.client_id,
+                        "stocksLeft": session.stocks,
+                    },
+                )
                 if session.stocks <= 0:
                     session.is_dead = True
                     session.respawn_at_tick = -1
@@ -854,8 +960,10 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
 
         self.tick += 1
         if self.tick % 20 == 0:
-            print(f"[PERF] tick={self.tick} projectiles={len(self.combat.projectiles)} "
-                  f"events={len(self.combat.pending_events)} sessions={len(self.sessions)}")
+            print(
+                f"[PERF] tick={self.tick} projectiles={len(self.combat.projectiles)} "
+                f"events={len(self.combat.pending_events)} sessions={len(self.sessions)}"
+            )
 
         await self.check_game_over(session.room_id)
         await self.maybe_broadcast_snapshot(session.room_id, websocket, reject_reason)
@@ -869,19 +977,53 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
 
-        text = str((data.get("payload") or {}).get("text", data.get("text", ""))).strip()
+        require_fields(data, ("sessionId", "roomId", "payload"))
+        if require_string_field(data, "sessionId") != session.session_id:
+            raise GsRequestError("SESSION_MISMATCH")
+        if require_string_field(data, "roomId") != session.room_id:
+            raise GsRequestError("ROOM_MISMATCH")
+        if not isinstance(data.get("payload"), str):
+            raise GsRequestError("INVALID_PAYLOAD")
+
+        payload = self.decrypt_payload(session, data)
+        if require_string_field(payload, "type") != TYPE_CHAT:
+            raise GsRequestError("TYPE_MISMATCH")
+        if require_string_field(payload, "sessionId") != session.session_id:
+            raise GsRequestError("SESSION_MISMATCH")
+        if require_string_field(payload, "roomId") != session.room_id:
+            raise GsRequestError("ROOM_MISMATCH")
+
+        text = require_string_field(payload, "text").strip()
         if not text:
             return
 
-        msg = {
-            "type": "CHAT",
+        payload_obj = {
+            "type": TYPE_CHAT,
             "roomId": session.room_id,
             "fromClientId": session.client_id,
             "text": text,
             "timestamp": self.utc_now_iso(),
         }
         for peer in list(self.rooms.get(session.room_id, set())):
-            await self.send_json(peer, msg)
+            peer_session = self.sessions.get(peer)
+            if peer_session is None or not peer_session.authenticated:
+                continue
+            encrypted = self.encrypt_payload(
+                peer_session,
+                {
+                    **payload_obj,
+                    "sessionId": peer_session.session_id or "",
+                },
+            )
+            await self.send_json(
+                peer,
+                {
+                    "type": TYPE_CHAT,
+                    "sessionId": peer_session.session_id or "",
+                    "roomId": session.room_id,
+                    "payload": encrypted,
+                },
+            )
 
     # ═══════════════════════════════════════════════════════════════
     # Cleanup / utils
@@ -897,12 +1039,17 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         # 已认证的断线进入重连宽限期，不完全清理
         if session.authenticated and session.session_id and room_id:
             room_state = self.room_states.get(room_id)
-            is_playing = room_state is not None and room_state.get("status") in ("PLAYING", "STARTING")
+            is_playing = room_state is not None and room_state.get("status") in (
+                "PLAYING",
+                "STARTING",
+            )
             if is_playing:
                 self.remove_from_room(websocket, room_id)
                 self.sessions.pop(websocket, None)
                 self._enter_reconnect_grace(session)
-                print(f"[DISCONNECT] client={client_id} room={room_id} => reconnect grace (sessionId={session.session_id})")
+                print(
+                    f"[DISCONNECT] client={client_id} room={room_id} => reconnect grace (sessionId={session.session_id})"
+                )
                 await self.broadcast_room_state(room_id)
                 await self.broadcast_snapshot(room_id)
                 return
@@ -918,9 +1065,13 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
             self.sessions_by_id.pop(session.session_id, None)
             self.reconnect_grace.pop(session.session_id, None)
         self.sessions.pop(websocket, None)
-        print(f"[CLEANUP] client={client_id} room={room_id} reason={reason} sessions={len(self.sessions)}")
+        print(
+            f"[CLEANUP] client={client_id} room={room_id} reason={reason} sessions={len(self.sessions)}"
+        )
 
-    async def close_and_forget_socket(self, websocket: Any, reason: str = "replaced") -> None:
+    async def close_and_forget_socket(
+        self, websocket: Any, reason: str = "replaced"
+    ) -> None:
         if websocket is None:
             return
         old_session = self.sessions.get(websocket)
@@ -944,9 +1095,11 @@ class RelayServer(GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMix
         self.sessions.pop(websocket, None)
         try:
             await websocket.close(code=4000, reason=reason)
-        except Exception:
-            pass
-        print(f"[FORGET SOCKET] reason={reason} oldClient={old_client_id} sessions={len(self.sessions)}")
+        except Exception as exc:
+            print(f"[FORGET SOCKET WARN] close failed: {exc}")
+        print(
+            f"[FORGET SOCKET] reason={reason} oldClient={old_client_id} sessions={len(self.sessions)}"
+        )
 
     def remove_from_room(self, websocket: Any, room_id: str) -> None:
         members = self.rooms.get(room_id)

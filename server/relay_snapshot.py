@@ -11,81 +11,107 @@ from game_config import (
 )
 from game_models import ClientSession
 from gs_protocol import TYPE_RESULT, TYPE_SNAPSHOT
+from relay_contracts import RelayServerContext
 
 
 class SnapshotBroadcastMixin:
     async def maybe_broadcast_snapshot(
-        self, room_id: str, websocket: Any, reject_reason: str = "",
+        self: RelayServerContext,
+        room_id: str,
+        websocket: Any,
+        reject_reason: str = "",
     ) -> None:
         if not room_id:
             return
         should_broadcast = True
         if SNAPSHOT_THROTTLE_ENABLED:
             interval = max(1, int(SNAPSHOT_INTERVAL_TICKS))
-            should_broadcast = (self.tick % interval == 0)
+            should_broadcast = self.tick % interval == 0
         if SNAPSHOT_FORCE_BROADCAST_ON_EVENTS and len(self.combat.pending_events) > 0:
             should_broadcast = True
         if not should_broadcast:
             return
-        await self.broadcast_snapshot(room_id, reject_reason_by_socket={websocket: reject_reason})
+        await self.broadcast_snapshot(
+            room_id, reject_reason_by_socket={websocket: reject_reason}
+        )
         self.combat.clear_events()
 
-    def build_snapshot_payload(self, session: ClientSession, reject_reason: str) -> dict:
+    def build_snapshot_payload(
+        self: RelayServerContext, session: ClientSession, reject_reason: str
+    ) -> dict:
         players = []
         for s in self.sessions.values():
             if s.room_id != session.room_id or s.client_id is None:
                 continue
-            players.append({
-                "slotNo": 1 if s.client_id == "Client1" else 2,
-                "userId": s.user_id or 0,
-                "clientId": s.client_id,
-                "state": s.accepted_state,
-                "grounded": s.accepted_grounded,
-                "jumpCount": s.accepted_jump_count,
-                "posX": s.pos_x, "posY": s.pos_y,
-                "velX": s.vel_x, "velY": s.vel_y,
-                "aimX": getattr(s, "aim_x", 1.0),
-                "aimY": getattr(s, "aim_y", 0.0),
-                "equippedWeaponId": s.equipped_weapon_id,
-                "equippedEffectIds": list(s.equipped_effect_ids),
-                "damagePercent": s.damage_percent,
-                "stocks": s.stocks,
-                "isDead": s.is_dead,
-                "facing": s.facing,
-                "lastKnockbackX": s.last_knockback_x,
-                "lastKnockbackY": s.last_knockback_y,
-                "lastHitTick": s.last_hit_tick,
-            })
+            players.append(
+                {
+                    "slotNo": 1 if s.client_id == "Client1" else 2,
+                    "userId": s.user_id or 0,
+                    "clientId": s.client_id,
+                    "state": s.accepted_state,
+                    "grounded": s.accepted_grounded,
+                    "jumpCount": s.accepted_jump_count,
+                    "posX": s.pos_x,
+                    "posY": s.pos_y,
+                    "velX": s.vel_x,
+                    "velY": s.vel_y,
+                    "aimX": getattr(s, "aim_x", 1.0),
+                    "aimY": getattr(s, "aim_y", 0.0),
+                    "equippedWeaponId": s.equipped_weapon_id,
+                    "equippedEffectIds": list(s.equipped_effect_ids),
+                    "damagePercent": s.damage_percent,
+                    "stocks": s.stocks,
+                    "isDead": s.is_dead,
+                    "facing": s.facing,
+                    "lastKnockbackX": s.last_knockback_x,
+                    "lastKnockbackY": s.last_knockback_y,
+                    "lastHitTick": s.last_hit_tick,
+                }
+            )
         projectiles = []
         for p in self.combat.projectiles.values():
             if not p.alive:
                 continue
-            projectiles.append({
-                "projId": p.proj_id,
-                "ownerClientId": p.owner_client_id,
-                "weaponId": p.weapon_id,
-                "bulletId": getattr(p, "bullet_id", ""),
-                "visualId": getattr(p, "visual_id", ""),
-                "posX": p.pos_x, "posY": p.pos_y,
-                "velX": p.vel_x, "velY": p.vel_y,
-                "rotationDeg": getattr(p, "rotation_deg", 0.0),
-                "radius": p.radius, "ttl": p.ttl, "alive": p.alive,
-                "effectIds": list(p.effect_ids),
-            })
+            projectiles.append(
+                {
+                    "projId": p.proj_id,
+                    "ownerClientId": p.owner_client_id,
+                    "weaponId": p.weapon_id,
+                    "bulletId": getattr(p, "bullet_id", ""),
+                    "visualId": getattr(p, "visual_id", ""),
+                    "posX": p.pos_x,
+                    "posY": p.pos_y,
+                    "velX": p.vel_x,
+                    "velY": p.vel_y,
+                    "rotationDeg": getattr(p, "rotation_deg", 0.0),
+                    "radius": p.radius,
+                    "ttl": p.ttl,
+                    "alive": p.alive,
+                    "effectIds": list(p.effect_ids),
+                }
+            )
         loots = []
-        room_loots = self.get_room_loots(session.room_id)
+        room_loots = self.get_room_loots(session.room_id or "")
         for loot in room_loots.values():
             if not loot.alive:
                 continue
-            loots.append({
-                "lootId": loot.loot_id, "lootType": loot.loot_type,
-                "itemId": loot.item_id,
-                "posX": loot.pos_x, "posY": loot.pos_y,
-                "velY": loot.vel_y, "radius": loot.radius, "landed": loot.landed,
-            })
+            loots.append(
+                {
+                    "lootId": loot.loot_id,
+                    "lootType": loot.loot_type,
+                    "itemId": loot.item_id,
+                    "posX": loot.pos_x,
+                    "posY": loot.pos_y,
+                    "velY": loot.vel_y,
+                    "radius": loot.radius,
+                    "landed": loot.landed,
+                }
+            )
         events = []
         for e in self.combat.pending_events:
-            events.append({"eventType": e.event_type, "eventSeq": e.event_seq, "data": e.data})
+            events.append(
+                {"eventType": e.event_type, "eventSeq": e.event_seq, "data": e.data}
+            )
         return {
             "tick": self.tick,
             "lastProcessedSeq": session.last_seq,
@@ -96,15 +122,23 @@ class SnapshotBroadcastMixin:
             "events": events,
         }
 
-    async def send_snapshot(self, websocket: Any, session: ClientSession, reject_reason: str) -> None:
+    async def send_snapshot(
+        self: RelayServerContext,
+        websocket: Any,
+        session: ClientSession,
+        reject_reason: str,
+    ) -> None:
         snapshot = self.build_snapshot_payload(session, reject_reason)
         # 用 KcGs 加密 snapshot payload
-        encrypted = self.encrypt_payload(session, {
-            "type": TYPE_SNAPSHOT,
-            "sessionId": session.session_id or "",
-            "roomId": session.room_id or "",
-            **snapshot,
-        })
+        encrypted = self.encrypt_payload(
+            session,
+            {
+                "type": TYPE_SNAPSHOT,
+                "sessionId": session.session_id or "",
+                "roomId": session.room_id or "",
+                **snapshot,
+            },
+        )
         response = {
             "type": TYPE_SNAPSHOT,
             "sessionId": session.session_id or "",
@@ -114,14 +148,19 @@ class SnapshotBroadcastMixin:
         await websocket.send(json.dumps(response, ensure_ascii=False))
 
     async def broadcast_snapshot(
-        self, room_id: str,
+        self: RelayServerContext,
+        room_id: str,
         reject_reason_by_socket: Optional[Dict[Any, str]] = None,
     ) -> None:
         peers = list(self.rooms.get(room_id, set()))
         tasks = []
         for peer in peers:
             session = self.sessions.get(peer)
-            if session is None or session.room_id != room_id or session.client_id is None:
+            if (
+                session is None
+                or session.room_id != room_id
+                or session.client_id is None
+            ):
                 continue
             if not session.authenticated or session.kc_gs is None:
                 continue
@@ -140,7 +179,7 @@ class SnapshotBroadcastMixin:
     # 游戏结束检测 / RESULT (阶段五第7步)
     # ═══════════════════════════════════════════════════════════════
 
-    async def check_game_over(self, room_id: str) -> None:
+    async def check_game_over(self: RelayServerContext, room_id: str) -> None:
         """检测是否仅剩 ≤1 名存活玩家，若是则广播 RESULT。"""
         if not room_id:
             return
@@ -190,28 +229,38 @@ class SnapshotBroadcastMixin:
         # 组装结算数据
         result_players = []
         for s in all_players:
-            result_players.append({
-                "userId": s.user_id or 0,
-                "clientId": s.client_id or "",
-                "stocksLeft": max(0, s.stocks),
-                "finalDamagePercent": round(s.damage_percent, 1),
-            })
-        # 也加入重连宽限期内的玩家
-        for grace_info in self.reconnect_grace.values():
-            s = grace_info["session"]
-            if s.room_id == room_id and s.client_id:
-                result_players.append({
+            result_players.append(
+                {
                     "userId": s.user_id or 0,
                     "clientId": s.client_id or "",
                     "stocksLeft": max(0, s.stocks),
                     "finalDamagePercent": round(s.damage_percent, 1),
-                })
+                }
+            )
+        # 也加入重连宽限期内的玩家
+        for grace_info in self.reconnect_grace.values():
+            s = grace_info["session"]
+            if s.room_id == room_id and s.client_id:
+                result_players.append(
+                    {
+                        "userId": s.user_id or 0,
+                        "clientId": s.client_id or "",
+                        "stocksLeft": max(0, s.stocks),
+                        "finalDamagePercent": round(s.damage_percent, 1),
+                    }
+                )
 
-        print(f"[GAME OVER] room={room_id} winnerUserId={winner_user_id} reason={reason}")
+        print(
+            f"[GAME OVER] room={room_id} winnerUserId={winner_user_id} reason={reason}"
+        )
         await self.broadcast_result(room_id, winner_user_id, reason, result_players)
 
     async def broadcast_result(
-        self, room_id: str, winner_user_id: int, reason: str, players: list,
+        self: RelayServerContext,
+        room_id: str,
+        winner_user_id: int,
+        reason: str,
+        players: list,
     ) -> None:
         """广播 RESULT 给房间内所有在线玩家和重连宽限期内的玩家。"""
         # 在线玩家
@@ -219,20 +268,26 @@ class SnapshotBroadcastMixin:
             session = self.sessions.get(peer)
             if session is None or not session.authenticated:
                 continue
-            result_payload = self.encrypt_payload(session, {
-                "type": TYPE_RESULT,
-                "sessionId": session.session_id or "",
-                "roomId": room_id,
-                "winnerUserId": winner_user_id,
-                "reason": reason,
-                "players": players,
-            })
-            await self.send_json(peer, {
-                "type": TYPE_RESULT,
-                "sessionId": session.session_id or "",
-                "roomId": room_id,
-                "payload": result_payload,
-            })
+            result_payload = self.encrypt_payload(
+                session,
+                {
+                    "type": TYPE_RESULT,
+                    "sessionId": session.session_id or "",
+                    "roomId": room_id,
+                    "winnerUserId": winner_user_id,
+                    "reason": reason,
+                    "players": players,
+                },
+            )
+            await self.send_json(
+                peer,
+                {
+                    "type": TYPE_RESULT,
+                    "sessionId": session.session_id or "",
+                    "roomId": room_id,
+                    "payload": result_payload,
+                },
+            )
 
         # 清理对战状态
         self.combat.clear_events()
@@ -242,4 +297,3 @@ class SnapshotBroadcastMixin:
     # ═══════════════════════════════════════════════════════════════
     # Chat
     # ═══════════════════════════════════════════════════════════════
-

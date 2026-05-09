@@ -1,9 +1,7 @@
-HOST = "0.0.0.0"
+HOST = "127.0.0.1"
 PORT = 8765
 # relay_server 相关
 DEBUG_INPUT = False
-DEBUG_ATTACK = False
-
 DEBUG_LOOT = False
 DEBUG_ROOM = True
 DEBUG_CONNECTION = True
@@ -48,7 +46,7 @@ PLAYER_HALF_HEIGHT = 0.42
 # -----------------------------
 # Unified movement parameters
 # -----------------------------
-SIM_DT = SIM_DT = 1.0 / 30.0
+SIM_DT = 1.0 / 30.0
 MOVE_SPEED = 32.0 * MOVEMENT_MULTIPLIER
 
 GRAVITY = -2.0 * MOVEMENT_MULTIPLIER
@@ -57,8 +55,6 @@ FALL_SPEED_CAP = -36.0 * MOVEMENT_MULTIPLIER
 
 OFFSET_Y = 0.7
 GROUND_Y = -1.45 + OFFSET_Y
-
-
 
 
 RESPAWN_DELAY_SECONDS = 2.0
@@ -193,21 +189,18 @@ WEAPON_DB = {
         "fire_interval_ticks": 15,
         "auto_fire": True,
     },
-
     "狙击枪": {
         "attack_mode": "ranged",
         "bullet_id": "狙击子弹",
         "fire_interval_ticks": 55,
         "auto_fire": True,
     },
-
     "重机枪": {
         "attack_mode": "ranged",
         "bullet_id": "机枪子弹",
         "fire_interval_ticks": 6,
         "auto_fire": True,
     },
-
     "霰弹枪": {
         "attack_mode": "ranged",
         "bullet_id": "霰弹",
@@ -216,7 +209,6 @@ WEAPON_DB = {
         "fire_interval_ticks": 25,
         "auto_fire": True,
     },
-
     "短剑": {
         "attack_mode": "melee",
         "melee_profile": "短剑",
@@ -251,7 +243,6 @@ BULLET_DB = {
         "base_damage": 12.0,
         "base_knockback": 2.0,
     },
-
     "狙击子弹": {
         "speed": 25.0,
         "radius": 0.16,
@@ -260,7 +251,6 @@ BULLET_DB = {
         "base_damage": 22.0,
         "base_knockback": 3.2,
     },
-
     "机枪子弹": {
         "speed": 15.0,
         "radius": 0.18,
@@ -269,7 +259,6 @@ BULLET_DB = {
         "base_damage": 6.0,
         "base_knockback": 1.0,
     },
-
     "剑气": {
         "speed": 15.0,
         "radius": 0.28,
@@ -279,12 +268,12 @@ BULLET_DB = {
         "base_knockback": 1.8,
     },
     "霰弹": {
-    "speed": 20.0,
-    "radius": 0.13,
-    "ttl": 0.75,
-    "visual_id": "霰弹",
-    "base_damage": 5.0,
-    "base_knockback": 0.9,
+        "speed": 20.0,
+        "radius": 0.13,
+        "ttl": 0.75,
+        "visual_id": "霰弹",
+        "base_damage": 5.0,
+        "base_knockback": 0.9,
     },
 }
 # -----------------------------
@@ -320,6 +309,4 @@ EFFECT_DB = {
         "damage_multiplier": 0.8,
         "inherit_runtime_effects": True,
     },
-
-    
 }

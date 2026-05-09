@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import random
+import secrets
 import string
 from typing import Any, Dict, Optional
 
@@ -19,18 +19,21 @@ from gs_protocol import (
     require_fields,
     require_string_field,
 )
+from relay_contracts import RelayServerContext
 
 
 class RoomLifecycleMixin:
-    def generate_room_id(self) -> str:
+    def generate_room_id(self: RelayServerContext) -> str:
         alphabet = string.ascii_uppercase + string.digits
         for _ in range(100):
-            room_id = "".join(random.choice(alphabet) for _ in range(4))
+            room_id = "".join(secrets.choice(alphabet) for _ in range(4))
             if room_id not in self.room_states:
                 return room_id
-        return "".join(random.choice(alphabet) for _ in range(6))
+        return "".join(secrets.choice(alphabet) for _ in range(6))
 
-    def get_or_create_room_state(self, room_id: str, host_client_id: str) -> Dict[str, Any]:
+    def get_or_create_room_state(
+        self: RelayServerContext, room_id: str, host_client_id: str
+    ) -> Dict[str, Any]:
         if room_id not in self.room_states:
             self.room_states[room_id] = {
                 "hostClientId": host_client_id,
@@ -39,7 +42,9 @@ class RoomLifecycleMixin:
             }
         return self.room_states[room_id]
 
-    def allocate_slot_no(self, room_state: Dict[str, Any], _requested: str = "") -> int:
+    def allocate_slot_no(
+        self: RelayServerContext, room_state: Dict[str, Any], _requested: str = ""
+    ) -> int:
         players = room_state["players"]
         used_slots = {int(p["slotNo"]) for p in players.values() if "slotNo" in p}
         if 1 not in used_slots:
@@ -49,15 +54,22 @@ class RoomLifecycleMixin:
         return -1
 
     def build_room_state_payload(
-        self, room_id: str, local_session: Optional[ClientSession] = None,
+        self: RelayServerContext,
+        room_id: str,
+        local_session: Optional[ClientSession] = None,
     ) -> dict:
         room_state = self.room_states.get(room_id)
         if room_state is None:
             return {
-                "roomId": room_id, "hostClientId": "", "state": "missing",
+                "roomId": room_id,
+                "hostClientId": "",
+                "state": "missing",
                 "ownerUserId": 0,
-                "players": [], "canStart": False,
-                "localClientId": "", "localSlotNo": 0, "localIsHost": False,
+                "players": [],
+                "canStart": False,
+                "localClientId": "",
+                "localSlotNo": 0,
+                "localIsHost": False,
             }
         players_dict = room_state.get("players", {})
         host_client_id = room_state.get("hostClientId", "")
@@ -74,15 +86,17 @@ class RoomLifecycleMixin:
                 if player_session is not None:
                     player_user_id = player_session.user_id or 0
                     player_username = player_session.username or ""
-            players.append({
-                "userId": player_user_id,
-                "username": player_username,
-                "clientId": cid,
-                "slotNo": int(player["slotNo"]),
-                "ready": bool(player["ready"]),
-                "isHost": cid == host_client_id,
-                "online": bool(player.get("online", True)),
-            })
+            players.append(
+                {
+                    "userId": player_user_id,
+                    "username": player_username,
+                    "clientId": cid,
+                    "slotNo": int(player["slotNo"]),
+                    "ready": bool(player["ready"]),
+                    "isHost": cid == host_client_id,
+                    "online": bool(player.get("online", True)),
+                }
+            )
             if cid == host_client_id:
                 owner_user_id = player_user_id
         players.sort(key=lambda p: p["slotNo"])
@@ -111,7 +125,7 @@ class RoomLifecycleMixin:
             "localIsHost": local_is_host,
         }
 
-    async def broadcast_room_state(self, room_id: str) -> None:
+    async def broadcast_room_state(self: RelayServerContext, room_id: str) -> None:
         """广播 ROOM_STATE，每个客户端使用各自的 KcGs 加密 payload。"""
         for peer in list(self.rooms.get(room_id, set())):
             peer_session = self.sessions.get(peer)
@@ -130,10 +144,12 @@ class RoomLifecycleMixin:
             }
             await self.send_json(peer, msg)
 
-    async def broadcast_game_start(self, room_id: str) -> None:
-        match_id = f"match-{random.randint(100, 999)}"
+    async def broadcast_game_start(self: RelayServerContext, room_id: str) -> None:
+        match_id = f"match-{100 + secrets.randbelow(900)}"
         peers = list(self.rooms.get(room_id, set()))
-        print(f"[BROADCAST_GAME_START] room={room_id} matchId={match_id} peers={len(peers)}")
+        print(
+            f"[BROADCAST_GAME_START] room={room_id} matchId={match_id} peers={len(peers)}"
+        )
         for peer in peers:
             peer_session = self.sessions.get(peer)
             if peer_session is None or not peer_session.authenticated:
@@ -161,7 +177,9 @@ class RoomLifecycleMixin:
     # ROOM_CREATE_REQ (阶段四第1步)
     # ═══════════════════════════════════════════════════════════════
 
-    async def handle_create_room(self, websocket: Any, data: Dict[str, Any]) -> None:
+    async def handle_create_room(
+        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+    ) -> None:
         session = self._require_session(websocket)
 
         # 解密并校验 auth
@@ -190,25 +208,33 @@ class RoomLifecycleMixin:
         print(f"[ROOM_CREATE_REQ] creator=Client1 room={room_id}")
 
         # 返回 ROOM_CREATE_REP
-        rep_payload = self.encrypt_payload(session, {
-            "type": TYPE_ROOM_CREATE_REP,
-            "ok": True,
-            "sessionId": session.session_id or "",
-            "roomId": room_id,
-        })
-        await self.send_json(websocket, {
-            "type": TYPE_ROOM_CREATE_REP,
-            "sessionId": session.session_id or "",
-            "roomId": room_id,
-            "payload": rep_payload,
-        })
+        rep_payload = self.encrypt_payload(
+            session,
+            {
+                "type": TYPE_ROOM_CREATE_REP,
+                "ok": True,
+                "sessionId": session.session_id or "",
+                "roomId": room_id,
+            },
+        )
+        await self.send_json(
+            websocket,
+            {
+                "type": TYPE_ROOM_CREATE_REP,
+                "sessionId": session.session_id or "",
+                "roomId": room_id,
+                "payload": rep_payload,
+            },
+        )
         await self.broadcast_room_state(room_id)
 
     # ═══════════════════════════════════════════════════════════════
     # ROOM_JOIN_REQ (阶段四第4步)
     # ═══════════════════════════════════════════════════════════════
 
-    async def handle_join_room(self, websocket: Any, data: Dict[str, Any]) -> None:
+    async def handle_join_room(
+        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+    ) -> None:
         session = self._require_session(websocket)
 
         require_fields(data, ("sessionId", "roomId", "auth"))
@@ -229,21 +255,29 @@ class RoomLifecycleMixin:
 
         # 返回 ROOM_JOIN_REP (nonce 回显 ROOM_JOIN_REQ 的 auth.nonce)
         room_id = require_string_field(data, "roomId")
-        rep_payload = self.encrypt_payload(session, {
-            "type": TYPE_ROOM_JOIN_REP,
-            "ok": True,
-            "sessionId": session.session_id or "",
-            "roomId": room_id,
-            "nonce": join_auth_nonce,
-        })
-        await self.send_json(websocket, {
-            "type": TYPE_ROOM_JOIN_REP,
-            "sessionId": session.session_id or "",
-            "roomId": room_id,
-            "payload": rep_payload,
-        })
+        rep_payload = self.encrypt_payload(
+            session,
+            {
+                "type": TYPE_ROOM_JOIN_REP,
+                "ok": True,
+                "sessionId": session.session_id or "",
+                "roomId": room_id,
+                "nonce": join_auth_nonce,
+            },
+        )
+        await self.send_json(
+            websocket,
+            {
+                "type": TYPE_ROOM_JOIN_REP,
+                "sessionId": session.session_id or "",
+                "roomId": room_id,
+                "payload": rep_payload,
+            },
+        )
 
-    async def _internal_join_room(self, websocket: Any, data: Dict[str, Any]) -> None:
+    async def _internal_join_room(
+        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+    ) -> None:
         """内部 JOIN 逻辑（被 CREATE_ROOM 和 JOIN_ROOM 共用）。"""
         requested_client_id = str(data.get("clientId", "")).strip()
         room_id = str(data.get("roomId", "")).strip()
@@ -287,16 +321,22 @@ class RoomLifecycleMixin:
             old_ws = old_player.get("websocket")
             if old_ws is not None and old_ws is not websocket:
                 print(f"[JOIN REPLACE] room={room_id} client={assigned_client_id}")
-                await self.close_and_forget_socket(old_ws, reason=f"replaced by {assigned_client_id}")
+                await self.close_and_forget_socket(
+                    old_ws, reason=f"replaced by {assigned_client_id}"
+                )
 
         # 清理幽灵 session
         for other_ws, other_session in list(self.sessions.items()):
             if other_ws is websocket:
                 continue
-            if (other_session.room_id == room_id
-                    and other_session.client_id == assigned_client_id):
+            if (
+                other_session.room_id == room_id
+                and other_session.client_id == assigned_client_id
+            ):
                 print(f"[JOIN CLEAN GHOST] client={assigned_client_id}")
-                await self.close_and_forget_socket(other_ws, reason=f"ghost {assigned_client_id}")
+                await self.close_and_forget_socket(
+                    other_ws, reason=f"ghost {assigned_client_id}"
+                )
 
         # 清理当前 websocket 的其他 player key
         for cid in list(players.keys()):
@@ -361,7 +401,9 @@ class RoomLifecycleMixin:
     # ROOM_READY_REQ (阶段四第7/9步)
     # ═══════════════════════════════════════════════════════════════
 
-    async def handle_ready(self, websocket: Any, data: Dict[str, Any]) -> None:
+    async def handle_ready(
+        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+    ) -> None:
         session = self._require_session(websocket)
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
@@ -390,30 +432,40 @@ class RoomLifecycleMixin:
             raise GsRequestError("ROOM_NOT_WAITING")
 
         players[session.client_id]["ready"] = is_ready
-        print(f"[READY] room={session.room_id} client={session.client_id} ready={is_ready}")
+        print(
+            f"[READY] room={session.room_id} client={session.client_id} ready={is_ready}"
+        )
 
         # ROOM_READY_REP (nonce 回显 ROOM_READY_REQ 的 payload.nonce)
-        rep_payload = self.encrypt_payload(session, {
-            "type": TYPE_ROOM_READY_REP,
-            "ok": True,
-            "ready": is_ready,
-            "sessionId": session.session_id or "",
-            "roomId": session.room_id,
-            "nonce": ready_nonce,
-        })
-        await self.send_json(websocket, {
-            "type": TYPE_ROOM_READY_REP,
-            "sessionId": session.session_id or "",
-            "roomId": session.room_id,
-            "payload": rep_payload,
-        })
+        rep_payload = self.encrypt_payload(
+            session,
+            {
+                "type": TYPE_ROOM_READY_REP,
+                "ok": True,
+                "ready": is_ready,
+                "sessionId": session.session_id or "",
+                "roomId": session.room_id,
+                "nonce": ready_nonce,
+            },
+        )
+        await self.send_json(
+            websocket,
+            {
+                "type": TYPE_ROOM_READY_REP,
+                "sessionId": session.session_id or "",
+                "roomId": session.room_id,
+                "payload": rep_payload,
+            },
+        )
         await self.broadcast_room_state(session.room_id)
 
     # ═══════════════════════════════════════════════════════════════
     # ROOM_START_REQ (阶段四第11步)
     # ═══════════════════════════════════════════════════════════════
 
-    async def handle_start_game(self, websocket: Any, data: Dict[str, Any]) -> None:
+    async def handle_start_game(
+        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+    ) -> None:
         session = self._require_session(websocket)
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
@@ -456,7 +508,9 @@ class RoomLifecycleMixin:
     # LEAVE_ROOM
     # ═══════════════════════════════════════════════════════════════
 
-    async def handle_leave_room(self, websocket: Any, data: Dict[str, Any]) -> None:
+    async def handle_leave_room(
+        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+    ) -> None:
         session = self.sessions.get(websocket)
         if session is None or not session.room_id:
             return
@@ -467,7 +521,9 @@ class RoomLifecycleMixin:
         session.client_id = None
         await self.broadcast_room_state(room_id)
 
-    async def remove_player_from_room_state(self, websocket: Any, room_id: str) -> None:
+    async def remove_player_from_room_state(
+        self: RelayServerContext, websocket: Any, room_id: str
+    ) -> None:
         session = self.sessions.get(websocket)
         room_state = self.room_states.get(room_id)
         if session is None or room_state is None:
@@ -490,4 +546,3 @@ class RoomLifecycleMixin:
     # ═══════════════════════════════════════════════════════════════
     # INPUT (阶段五第1步)
     # ═══════════════════════════════════════════════════════════════
-

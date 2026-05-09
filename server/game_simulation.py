@@ -27,8 +27,12 @@ MAP_PLATFORMS: List[Platform] = [
 ]
 
 MAP_WALLS: List[RectCollider] = [
-    RectCollider(x_min=-9.5, x_max=-8.5, y_min=GROUND_Y, y_max=GROUND_Y + 1.5, kind="solid"),
-    RectCollider(x_min=28.5, x_max=29.5, y_min=GROUND_Y, y_max=GROUND_Y + 1.5, kind="solid"),
+    RectCollider(
+        x_min=-9.5, x_max=-8.5, y_min=GROUND_Y, y_max=GROUND_Y + 1.5, kind="solid"
+    ),
+    RectCollider(
+        x_min=28.5, x_max=29.5, y_min=GROUND_Y, y_max=GROUND_Y + 1.5, kind="solid"
+    ),
 ]
 
 
@@ -71,7 +75,12 @@ def step_vertical(session: ClientSession) -> None:
     else:
         session.pos_y = next_y
         session.accepted_grounded = False
-        if session.vel_y < 0 and session.accepted_state not in ("Jump", "Dash", "BasicAttack", "Hitstun"):
+        if session.vel_y < 0 and session.accepted_state not in (
+            "Jump",
+            "Dash",
+            "BasicAttack",
+            "Hitstun",
+        ):
             session.accepted_state = "Fall"
 
 
@@ -83,16 +92,22 @@ def get_standing_platform(session: ClientSession) -> Optional[Platform]:
 
 
 def is_on_platform(x: float, y: float, platform: Platform) -> bool:
-    within_x = (x + PLAYER_HALF_WIDTH) >= platform.x_min and (x - PLAYER_HALF_WIDTH) <= platform.x_max
+    within_x = (x + PLAYER_HALF_WIDTH) >= platform.x_min and (
+        x - PLAYER_HALF_WIDTH
+    ) <= platform.x_max
     close_y = abs(y - platform.y) <= GROUND_EPSILON
     return within_x and close_y
 
 
-def find_landing_platform(x: float, previous_y: float, next_y: float) -> Optional[Platform]:
+def find_landing_platform(
+    x: float, previous_y: float, next_y: float
+) -> Optional[Platform]:
     candidates: List[Platform] = []
 
     for platform in MAP_PLATFORMS:
-        within_x = (x + PLAYER_HALF_WIDTH) >= platform.x_min and (x - PLAYER_HALF_WIDTH) <= platform.x_max
+        within_x = (x + PLAYER_HALF_WIDTH) >= platform.x_min and (
+            x - PLAYER_HALF_WIDTH
+        ) <= platform.x_max
         crossed_y = previous_y >= platform.y >= next_y
         if within_x and crossed_y:
             candidates.append(platform)

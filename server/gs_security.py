@@ -14,6 +14,15 @@ from gs_errors import GsRequestError
 from gs_protocol import ProtocolError, require_int_field, require_string_field
 
 
+MAX_FUTURE_TIMESTAMP_SKEW_MS = 1000
+
+
+def timestamp_in_window(timestamp: int, current_ms: int, window_ms: int) -> bool:
+    return (
+        current_ms - window_ms <= timestamp <= current_ms + MAX_FUTURE_TIMESTAMP_SKEW_MS
+    )
+
+
 @dataclass(frozen=True)
 class ServiceTicket:
     user_id: int
@@ -38,7 +47,9 @@ class ReplayGuard:
         self.cache: Dict[str, int] = cache if cache is not None else {}
 
     def prune(self, current_ms: int) -> None:
-        expired = [key for key, expires_at in self.cache.items() if expires_at <= current_ms]
+        expired = [
+            key for key, expires_at in self.cache.items() if expires_at <= current_ms
+        ]
         for key in expired:
             self.cache.pop(key, None)
 
@@ -90,7 +101,11 @@ class GsSecurityService:
         try:
             if require_string_field(raw_ticket, "ticketType") != "SERVICE_TICKET":
                 raise GsRequestError("INVALID_TICKET")
-            if require_service and require_string_field(raw_ticket, "service") != self.config.gs_service_name:
+            if (
+                require_service
+                and require_string_field(raw_ticket, "service")
+                != self.config.gs_service_name
+            ):
                 raise GsRequestError("INVALID_TICKET")
             if require_string_field(raw_ticket, "clientId") != client_id:
                 raise GsRequestError("INVALID_TICKET")
@@ -180,10 +195,14 @@ class GsSecurityService:
             )
             raise GsRequestError("PAYLOAD_DECRYPT_FAILED") from exc
 
-    def decrypt_session_auth(self, session: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+    def decrypt_session_auth(
+        self, session: Any, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         return self.decrypt_session_object(session, data, "auth")
 
-    def decrypt_session_payload(self, session: Any, data: Dict[str, Any]) -> Dict[str, Any]:
+    def decrypt_session_payload(
+        self, session: Any, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         return self.decrypt_session_object(session, data, "payload")
 
     def decrypt_session_object(
@@ -200,7 +219,7 @@ class GsSecurityService:
         timestamp = require_int_field(decrypted, "ts")
         nonce = require_string_field(decrypted, "nonce")
         current_ms = now_ms()
-        if abs(current_ms - timestamp) > self.window_ms:
+        if not timestamp_in_window(timestamp, current_ms, self.window_ms):
             raise GsRequestError("AUTH_EXPIRED")
 
         user_id = getattr(session, "user_id", None)
@@ -230,7 +249,7 @@ class GsSecurityService:
     ) -> None:
         timestamp = require_int_field(payload, "ts")
         nonce = require_string_field(payload, "nonce")
-        if abs(current_ms - timestamp) > self.window_ms:
+        if not timestamp_in_window(timestamp, current_ms, self.window_ms):
             self.record_failure(
                 conn,
                 context,
