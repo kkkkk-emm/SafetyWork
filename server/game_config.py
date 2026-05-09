@@ -7,7 +7,13 @@ DEBUG_INPUT = False
 DEBUG_LOOT = False
 DEBUG_ROOM = True
 DEBUG_CONNECTION = True
-
+# -----------------------------
+# Snapshot encryption strategy
+# -----------------------------
+# 0  = SNAPSHOT 全部明文
+# 1  = 每个 SNAPSHOT 都加密
+# 10 = 每 10 个 SNAPSHOT 加密一次
+SNAPSHOT_ENCRYPT_EVERY_N = 0
 # game_combat 相关
 DEBUG_COMBAT_WARN = False
 DEBUG_ATTACK = False
