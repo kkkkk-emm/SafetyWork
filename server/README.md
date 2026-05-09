@@ -6,20 +6,61 @@
 
 ## 目录文件
 
+### 核心服务
+
 | 文件 | 作用 |
 | --- | --- |
 | `ws_server.py` | 命令行入口，创建 `RelayServer` 并启动服务。 |
-| `relay_server.py` | GS 核心逻辑，处理所有 WebSocket 消息（认证、房间、对战、重连）。 |
-| `gs_config.py` | 读取数据库、监听地址、密钥等环境变量配置。 |
-| `gs_db.py` | MySQL DAO，只读 `user_account`，只写 `security_event_log`。 |
-| `gs_protocol.py` | JSON 协议报文构造、解析和字段校验工具。 |
-| `crypto_utils.py` | Base64、DES、nonce 生成等密码学工具函数。 |
-| `game_models.py` | 数据模型：`ClientSession`、`InputPayload`、`Platform`、`ServerLoot` 等。 |
-| `game_config.py` | 游戏常量：物理参数、武器库、空投配置、快照节流等。 |
+| `relay_server.py` | GS 主类，通过 Mixin 组合房间/快照/掉落物/错误处理。 |
+| `relay_contracts.py` | `RelayServerContext` Protocol — Mixin 类型安全契约。 |
+
+### 安全模块
+
+| 文件 | 作用 |
+| --- | --- |
+| `gs_security.py` | `ReplayGuard` 防重放、`GsSecurityService` 票据/认证校验、`ServiceTicket` 值对象。 |
+| `gs_errors.py` | `GsRequestError` 业务错误类。 |
+| `gs_error_handling.py` | `GsErrorHandlingMixin` — 统一错误捕获与 ERROR 报文回复。 |
+| `crypto_utils.py` | Base64 / DES / nonce 生成等密码学工具（引用 `shared_crypto/`）。 |
+
+### 房间 & 对战
+
+| 文件 | 作用 |
+| --- | --- |
+| `relay_room.py` | `RoomLifecycleMixin` — 创建/加入/准备/开始/离开房间。 |
+| `relay_snapshot.py` | `SnapshotBroadcastMixin` — 快照构建与并行广播。 |
+| `relay_loot.py` | `LootManagerMixin` — 空投生成/物理/拾取。 |
 | `game_combat.py` | 战斗系统：攻击执行、投射物推进、碰撞检测、命中判定。 |
 | `game_effects.py` | 武器效果系统：爆炸、分裂弹、停留弹等特殊效果。 |
 | `game_simulation.py` | 物理模拟：重力、碰撞、出界判定、平台检测。 |
+
+### 配置 & 协议
+
+| 文件 | 作用 |
+| --- | --- |
+| `gs_config.py` | 数据库、监听地址、密钥等环境变量配置。 |
+| `gs_db.py` | MySQL DAO，只读 `user_account`，只写 `security_event_log`。 |
+| `gs_protocol.py` | JSON 协议报文构造、解析和字段校验工具。 |
+| `game_config.py` | 游戏常量：物理参数、武器库、空投配置、快照节流等。 |
+| `game_models.py` | 数据模型：`ClientSession`、`InputPayload`、`Platform`、`ServerLoot` 等。 |
+| `game_combat_config.py` | 战斗常量提取（武器/子弹/特效查找函数）。 |
+| `game_debug.py` | DEBUG 标志集中管理。 |
+| `game_effect_ids.py` | 特效 ID 别名与归一化。 |
 | `requirements.txt` | Python 依赖列表。 |
+
+### 架构说明
+
+`RelayServer` 通过 Mixin 组合模式拆分职责：
+
+```
+RelayServer
+├── GsErrorHandlingMixin   # 统一错误处理
+├── RoomLifecycleMixin     # 房间生命周期
+├── SnapshotBroadcastMixin # 快照广播
+└── LootManagerMixin       # 掉落物管理
+```
+
+所有 Mixin 通过 `RelayServerContext` Protocol 获得类型安全的自省能力，mypy 零错误。
 
 ## 运行前置条件
 
@@ -75,7 +116,7 @@ python -c "import os,base64; print(base64.b64encode(os.urandom(8)).decode())"
 | `MOVE_SPEED` | 8.0 | 水平移动速度 (m/s)。 |
 | `JUMP_VELOCITY` | 10.0 | 起跳初速度 (m/s)。 |
 | `MAX_JUMP_COUNT` | 2 | 最大连跳次数。 |
-| `SIM_DT` | 1/60 | 物理模拟步长 (秒)。 |
+| `SIM_DT` | 1/30 | 物理模拟步长 (秒)。 |
 | `RECONNECT_GRACE_SECONDS` | 30 | 断线重连宽限期 (秒)。 |
 | `MATCH_COUNTDOWN_MS` | 3000 | 开始对战的倒计时 (毫秒)。 |
 | `SNAPSHOT_INTERVAL_TICKS` | 2 | 快照广播间隔 (tick 数)。 |
@@ -551,7 +592,7 @@ $env:AUTH_GS_SERVICE_NAME='game/ws@127.0.0.1:8765'
 # ============================================
 # 5. 终端 1: 启动 AS（端口 9000）
 # ============================================
-$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.pem'
+$env:AS_RSA_PRIVATE_KEY_PATH='.\as\as_private_key.json'
 $env:K_TGS_BASE64=(Get-Content .\as\k_tgs_base64.txt -Raw).Trim()
 $env:AS_HOST='0.0.0.0'
 $env:AS_PORT='9000'
@@ -606,4 +647,6 @@ GS 实现了简化版的大乱斗对战逻辑：
 - **生命**：每局 3 条命，出界或死亡后延迟重生。
 - **受击硬直**：受到攻击后有短暂硬直（`hitstun`），期间不能移动/跳跃/攻击。
 
-所有武器、效果、地图参数可在 `game_config.py` 中配置。
+武器、效果、地图参数分布在 `game_config.py`、`game_combat_config.py`、`game_effect_ids.py` 中。
+
+密码学实现使用项目本地的 `shared_crypto/` 手写 DES/RSA/PBKDF2 模块，不依赖第三方密码库。

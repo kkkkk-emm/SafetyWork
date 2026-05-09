@@ -8,7 +8,7 @@
 """
 
 import json
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable
 
 
 # ── 规范定义的 GS 消息类型 ──────────────────────────────────────────
@@ -45,11 +45,9 @@ TYPE_LEAVE_ROOM = "LEAVE_ROOM"
 TYPE_ERROR = "ERROR"
 
 # ── GS_AUTH 前允许的消息类型 ────────────────────────────────────────
-PRE_AUTH_TYPES = {TYPE_GS_AUTH, TYPE_RECONNECT_REQ}
-
-
 class ProtocolError(ValueError):
     """协议层错误，业务层会转换成 ERROR 报文。"""
+
     def __init__(self, error_code: str) -> None:
         super().__init__(error_code)
         self.error_code = error_code
@@ -60,17 +58,6 @@ def dumps_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
-def loads_json(raw: str) -> Dict[str, Any]:
-    """解析客户端发来的顶层 JSON 报文。"""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ProtocolError("INVALID_JSON") from exc
-    if not isinstance(data, dict):
-        raise ProtocolError("INVALID_MESSAGE")
-    return data
-
-
 def make_message(msg_type: str, **fields: Any) -> str:
     """构造普通成功响应报文。"""
     msg = {"type": msg_type}
@@ -78,20 +65,6 @@ def make_message(msg_type: str, **fields: Any) -> str:
         if value is not None:
             msg[key] = value
     return dumps_json(msg)
-
-
-def make_error(error_code: str, **fields: Any) -> str:
-    """构造统一 ERROR 报文。"""
-    msg = {"type": TYPE_ERROR, "error": error_code}
-    for key, value in fields.items():
-        if value is not None:
-            msg[key] = value
-    return dumps_json(msg)
-
-
-def make_payload(obj: Dict[str, Any]) -> str:
-    """把 payload 对象编码成协议要求的 JSON 字符串。"""
-    return dumps_json(obj)
 
 
 def require_fields(msg: Dict[str, Any], fields: Iterable[str]) -> None:

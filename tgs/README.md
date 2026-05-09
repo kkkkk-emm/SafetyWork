@@ -2,7 +2,7 @@
 
 本目录实现独立的 TGS(Ticket Granting Server)。TGS 通过 WebSocket 接收 `TGS_REQ`，验证 AS 签发的 `TGT`，然后签发访问 GS 的 `Service Ticket` 和 `KcGs`。
 
-当前实现只新增 `tgs/`，不修改现有 `server/` 游戏服务。GS 暂时不会消费 Service Ticket，后续可以在 GS 中单独实现 `GS_AUTH`。
+GS 已完整实现 Kerberos 认证门禁（`GS_AUTH`），可使用 TGS 签发的 Service Ticket 建立加密游戏会话。
 
 ## 目录文件
 
@@ -132,7 +132,7 @@ Service Ticket 明文字段：
 ```powershell
 $env:AS_URL='ws://127.0.0.1:9000'
 $env:TGS_URL='ws://127.0.0.1:9001'
-$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.pem'
+$env:AS_PUBLIC_KEY_PATH='.\as\as_public_key.json'
 $env:AUTH_GS_SERVICE_NAME='game/ws@127.0.0.1:8765'
 $env:K_GS_BASE64='与TGS服务相同的K_GS_BASE64'
 python .\tgs\smoke_test_tgs.py
@@ -143,3 +143,5 @@ python .\tgs\smoke_test_tgs.py
 ```text
 TGS smoke test passed
 ```
+密码学实现使用项目本地的 `shared_crypto/` 手写 DES 模块。
+Smoke test 使用 `as/as_public_key.json` 作为 AS 公钥。

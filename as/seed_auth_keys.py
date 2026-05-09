@@ -6,12 +6,12 @@
 - K_TGS Base64 文本: 供 as_server.py 通过 K_TGS_BASE64 加载。
 
 运行前置条件:
-- 已安装 as/requirements.txt 中的 cryptography。
+- 已安装 as/requirements.txt 中的 shared_crypto。
 - 不需要 MySQL，不需要 AUTH_DB_*。
 
 默认输出:
-- as/as_private_key.pem: 私钥，应被 .gitignore 忽略。
-- as/as_public_key.pem: 公钥，可按团队需要提交或分发。
+- as/as_private_key.json: 私钥，应被 .gitignore 忽略。
+- as/as_public_key.json: 公钥，可按团队需要提交或分发。
 - as/k_tgs_base64.txt: K_TGS 示例值，应被 .gitignore 忽略。
 """
 
@@ -21,8 +21,8 @@ from pathlib import Path
 from crypto_utils import b64encode, generate_des_key, generate_rsa_key_pair
 
 
-DEFAULT_PRIVATE_KEY_PATH = Path(__file__).with_name("as_private_key.pem")
-DEFAULT_PUBLIC_KEY_PATH = Path(__file__).with_name("as_public_key.pem")
+DEFAULT_PRIVATE_KEY_PATH = Path(__file__).with_name("as_private_key.json")
+DEFAULT_PUBLIC_KEY_PATH = Path(__file__).with_name("as_public_key.json")
 DEFAULT_K_TGS_PATH = Path(__file__).with_name("k_tgs_base64.txt")
 
 

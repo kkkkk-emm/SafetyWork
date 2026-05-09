@@ -5,6 +5,7 @@ __pycache__/
 # Local TGS/GS key material.
 k_gs_base64.txt
 *.private.pem
+*.private.json
 keys/
 
 # Local environment files may contain K_TGS_BASE64 or K_GS_BASE64.

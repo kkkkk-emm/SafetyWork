@@ -31,7 +31,7 @@ GS_SERVICE_NAME = os.getenv("AUTH_GS_SERVICE_NAME", "game/ws@127.0.0.1:8765")
 PUBLIC_KEY_PATH = Path(
     os.getenv(
         "AS_PUBLIC_KEY_PATH",
-        str(Path(__file__).resolve().parents[1] / "as" / "as_public_key.pem"),
+        str(Path(__file__).resolve().parents[1] / "as" / "as_public_key.json"),
     )
 )
 

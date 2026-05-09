@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Set
+from typing import List, Optional, Set
 
 from game_config import (
     DEFAULT_BASE_KNOCKBACK,
@@ -12,16 +12,17 @@ from game_config import (
 @dataclass
 class ServerLoot:
     loot_id: str
-    loot_type: str          # "effect" / "weapon"
-    item_id: str            # effectId 或 weaponId
+    loot_type: str  # "effect" / "weapon"
+    item_id: str  # effectId 或 weaponId
     pos_x: float
-    pos_y: float            # 空投中心 y，不是 footY
+    pos_y: float  # 空投中心 y，不是 footY
     radius: float = 0.75
     alive: bool = True
 
     vel_y: float = 0.0
     landed: bool = False
     target_platform_y: float = 0.0
+
 
 @dataclass
 class Platform:
@@ -44,10 +45,10 @@ class RectCollider:
 class ClientSession:
     # ── Kerberos 认证状态 ──
     authenticated: bool = False
-    session_id: Optional[str] = None       # GS 签发的业务会话 ID
-    user_id: Optional[int] = None          # user_account.user_id
+    session_id: Optional[str] = None  # GS 签发的业务会话 ID
+    user_id: Optional[int] = None  # user_account.user_id
     username: Optional[str] = None
-    kc_gs: Optional[bytes] = None          # 与该客户端共享的 DES 会话密钥
+    kc_gs: Optional[bytes] = None  # 与该客户端共享的 DES 会话密钥
     login_gen: int = 0
 
     # ── 房间/对战状态 ──
@@ -88,7 +89,6 @@ class ClientSession:
     last_attack_weapon_id: str = ""
 
 
-
 @dataclass
 class ServerProjectile:
     proj_id: int
@@ -112,6 +112,13 @@ class ServerProjectile:
     bullet_id: str = ""
     visual_id: str = ""
     rotation_deg: float = 0.0
+    hover_split_initialized: bool = False
+    hover_split_start_vel_x: float = 0.0
+    hover_split_start_vel_y: float = 0.0
+    hover_split_start_speed: float = 0.0
+    hover_split_base_dir_x: float = 1.0
+    hover_split_base_dir_y: float = 0.0
+    hover_split_done: bool = False
 
 
 @dataclass

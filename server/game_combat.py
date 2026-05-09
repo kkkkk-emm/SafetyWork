@@ -3,17 +3,24 @@ import math
 
 import game_effects
 import game_simulation
+from game_combat_config import (
+    get_bullet_cfg as resolve_bullet_cfg,
+    get_weapon_bullet_id as resolve_weapon_bullet_id,
+    get_weapon_cfg as resolve_weapon_cfg,
+    normalize_special_bullet_id as normalize_bullet_alias,
+    resolve_visual_id as resolve_bullet_visual_id,
+)
 from game_config import (
-    BULLET_DB,
     MELEE_DB,
     PLAYER_HALF_HEIGHT,
     PLAYER_HALF_WIDTH,
     SIM_DT,
-    WEAPON_DB,
     KNOCKBACK_SCALE,
     HITSTUN_BASE_TICKS,
-    HITSTUN_PERCENT_FACTOR_TO_TICKS,MAX_PROJECTILES,
+    HITSTUN_PERCENT_FACTOR_TO_TICKS,
+    MAX_PROJECTILES,
 )
+from game_debug import debug_print
 
 # Debug switches are optional.
 # If game_config.py has not defined them yet, these defaults will be used.
@@ -38,15 +45,6 @@ from game_models import (
 )
 
 
-DEFAULT_WEAPON_ID = "手枪"
-DEFAULT_BULLET_ID = "普通子弹"
-
-
-def debug_print(enabled: bool, message: str) -> None:
-    if enabled:
-        print(message)
-
-
 class CombatRuntime:
     def __init__(self) -> None:
         self.projectiles: Dict[int, ServerProjectile] = {}
@@ -63,64 +61,19 @@ class CombatRuntime:
     # ------------------------------------------------------------------
 
     def get_weapon_cfg(self, weapon_id: str) -> dict:
-        if weapon_id in WEAPON_DB:
-            return WEAPON_DB[weapon_id]
-
-        if DEFAULT_WEAPON_ID in WEAPON_DB:
-            debug_print(
-                DEBUG_COMBAT_WARN,
-                f"[COMBAT WARN] weapon_id={weapon_id} not found, fallback={DEFAULT_WEAPON_ID}"
-            )
-            return WEAPON_DB[DEFAULT_WEAPON_ID]
-
-        first_key = next(iter(WEAPON_DB))
-        debug_print(
-            DEBUG_COMBAT_WARN,
-            f"[COMBAT WARN] DEFAULT_WEAPON_ID missing, fallback first weapon={first_key}"
-        )
-        return WEAPON_DB[first_key]
+        return resolve_weapon_cfg(weapon_id)
 
     def get_bullet_cfg(self, bullet_id: str) -> dict:
-        if bullet_id in BULLET_DB:
-            return BULLET_DB[bullet_id]
-
-        if DEFAULT_BULLET_ID in BULLET_DB:
-            debug_print(
-                DEBUG_COMBAT_WARN,
-                f"[COMBAT WARN] bullet_id={bullet_id} not found, fallback={DEFAULT_BULLET_ID}"
-            )
-            return BULLET_DB[DEFAULT_BULLET_ID]
-
-        first_key = next(iter(BULLET_DB))
-        debug_print(
-            DEBUG_COMBAT_WARN,
-            f"[COMBAT WARN] DEFAULT_BULLET_ID missing, fallback first bullet={first_key}"
-        )
-        return BULLET_DB[first_key]
+        return resolve_bullet_cfg(bullet_id)
 
     def get_weapon_bullet_id(self, weapon_cfg: dict) -> str:
-        return str(weapon_cfg.get("bullet_id", DEFAULT_BULLET_ID))
+        return resolve_weapon_bullet_id(weapon_cfg)
 
     def resolve_visual_id(self, bullet_id: str, bullet_cfg: dict) -> str:
-        return str(bullet_cfg.get("visual_id", bullet_id))
+        return resolve_bullet_visual_id(bullet_id, bullet_cfg)
 
     def normalize_special_bullet_id(self, bullet_id: str) -> str:
-        """
-        兼容旧 effect 里可能传进来的英文 projectile_kind。
-        """
-        if bullet_id in ("sword_wave", "swordwave", "SwordWave"):
-            return "剑气"
-
-        if bullet_id in ("pistol_bullet", "normal_gun"):
-            return "普通子弹"
-
-        if bullet_id in ("sniper_bullet", "sniper"):
-            return "狙击子弹"
-
-        if bullet_id in ("heavy_machine_bullet", "machine_gun"):
-            return "机枪子弹"
-
-        return bullet_id
+        return normalize_bullet_alias(bullet_id)
 
     # ------------------------------------------------------------------
     # Events
@@ -164,7 +117,7 @@ class CombatRuntime:
             f"weapon={attacker.equipped_weapon_id} "
             f"mode={attack_mode} "
             f"effects={attacker.equipped_effect_ids} "
-            f"aim=({aim_x:.2f},{aim_y:.2f})"
+            f"aim=({aim_x:.2f},{aim_y:.2f})",
         )
 
         if attack_mode == "melee":
@@ -193,7 +146,9 @@ class CombatRuntime:
     # Aim helpers
     # ------------------------------------------------------------------
 
-    def normalize_aim(self, owner: ClientSession, aim_x: float, aim_y: float) -> tuple[float, float]:
+    def normalize_aim(
+        self, owner: ClientSession, aim_x: float, aim_y: float
+    ) -> tuple[float, float]:
         mag = math.sqrt(aim_x * aim_x + aim_y * aim_y)
 
         if mag <= 0.0001:
@@ -207,7 +162,9 @@ class CombatRuntime:
     # Projectile spawning
     # ------------------------------------------------------------------
 
-    def spawn_projectile(self, owner: ClientSession, aim_x: float, aim_y: float) -> None:
+    def spawn_projectile(
+        self, owner: ClientSession, aim_x: float, aim_y: float
+    ) -> None:
         if owner.is_dead or owner.client_id is None:
             return
 
@@ -241,7 +198,7 @@ class CombatRuntime:
             f"bulletId={bullet_id} "
             f"pelletCount={pellet_count} "
             f"spread={spread_angle_deg} "
-            f"bulletCfg={bullet_cfg}"
+            f"bulletCfg={bullet_cfg}",
         )
 
         for offset_deg in angle_offsets_deg:
@@ -278,7 +235,9 @@ class CombatRuntime:
         bullet_cfg: dict,
     ) -> None:
         speed = float(bullet_cfg.get("speed", weapon_cfg.get("projectile_speed", 18.0)))
-        radius = float(bullet_cfg.get("radius", weapon_cfg.get("projectile_radius", 0.2)))
+        radius = float(
+            bullet_cfg.get("radius", weapon_cfg.get("projectile_radius", 0.2))
+        )
         ttl = float(bullet_cfg.get("ttl", weapon_cfg.get("projectile_ttl", 2.0)))
 
         damage = float(
@@ -370,7 +329,7 @@ class CombatRuntime:
             f"effects={proj.effect_ids} "
             f"pos=({proj.pos_x:.2f},{proj.pos_y:.2f}) "
             f"vel=({proj.vel_x:.2f},{proj.vel_y:.2f}) "
-            f"rot={rotation_deg:.1f}"
+            f"rot={rotation_deg:.1f}",
         )
 
         game_effects.apply_effects_on_projectile_spawned(self, None, proj)
@@ -407,7 +366,7 @@ class CombatRuntime:
                 rotation_deg = 0.0
             else:
                 rotation_deg = math.degrees(math.atan2(vel_y, vel_x))
-  
+
         proj = ServerProjectile(
             proj_id=self.next_projectile_id,
             owner_client_id=owner_client_id,
@@ -458,7 +417,7 @@ class CombatRuntime:
             f"effects={proj.effect_ids} "
             f"pos=({proj.pos_x:.2f},{proj.pos_y:.2f}) "
             f"vel=({proj.vel_x:.2f},{proj.vel_y:.2f}) "
-            f"rot={rotation_deg:.1f}"
+            f"rot={rotation_deg:.1f}",
         )
 
         game_effects.apply_effects_on_projectile_spawned(self, None, proj)
@@ -476,7 +435,10 @@ class CombatRuntime:
     ) -> None:
         cfg = MELEE_DB.get(melee_profile)
         if cfg is None or attacker.client_id is None:
-            debug_print(DEBUG_COMBAT_WARN, f"[COMBAT WARN] melee_profile={melee_profile} not found.")
+            debug_print(
+                DEBUG_COMBAT_WARN,
+                f"[COMBAT WARN] melee_profile={melee_profile} not found.",
+            )
             return
 
         dir_x = aim_x
@@ -530,7 +492,7 @@ class CombatRuntime:
             f"owner={hitbox.owner_client_id} "
             f"weapon={hitbox.weapon_id} "
             f"pos=({hitbox.center_x:.2f},{hitbox.center_y:.2f}) "
-            f"radius={hitbox.radius:.2f}"
+            f"radius={hitbox.radius:.2f}",
         )
 
     # ------------------------------------------------------------------
@@ -636,26 +598,6 @@ class CombatRuntime:
 
         return False
 
-    def projectile_hits_world(self, x: float, y: float, radius: float) -> bool:
-        left = x - radius
-        right = x + radius
-        bottom = y - radius
-        top = y + radius
-
-        for wall in game_simulation.MAP_WALLS:
-            overlap_x = right > wall.x_min and left < wall.x_max
-            overlap_y = top > wall.y_min and bottom < wall.y_max
-            if overlap_x and overlap_y:
-                return True
-
-        for platform in game_simulation.MAP_PLATFORMS:
-            overlap_x = right > platform.x_min and left < platform.x_max
-            overlap_y = abs(y - platform.y) <= radius
-            if overlap_x and overlap_y:
-                return True
-
-        return False
-
     def find_projectile_swept_hit_player(
         self,
         sessions: Dict[object, ClientSession],
@@ -698,44 +640,8 @@ class CombatRuntime:
                     f"target={session.client_id} "
                     f"from=({old_x:.2f},{old_y:.2f}) "
                     f"to=({next_x:.2f},{next_y:.2f}) "
-                    f"aabb=({left:.2f},{right:.2f},{bottom:.2f},{top:.2f})"
+                    f"aabb=({left:.2f},{right:.2f},{bottom:.2f},{top:.2f})",
                 )
-                return session
-
-        return None
-
-    def find_projectile_hit_player(
-        self,
-        sessions: Dict[object, ClientSession],
-        x: float,
-        y: float,
-        radius: float,
-        owner_client_id: str,
-    ) -> Optional[ClientSession]:
-        for session in sessions.values():
-            if session.client_id is None:
-                continue
-
-            if session.client_id == owner_client_id:
-                continue
-
-            if session.is_dead:
-                continue
-
-            player_left = session.pos_x - PLAYER_HALF_WIDTH
-            player_right = session.pos_x + PLAYER_HALF_WIDTH
-            player_bottom = session.pos_y
-            player_top = session.pos_y + PLAYER_HALF_HEIGHT * 2.0
-
-            proj_left = x - radius
-            proj_right = x + radius
-            proj_bottom = y - radius
-            proj_top = y + radius
-
-            overlap_x = proj_right > player_left and proj_left < player_right
-            overlap_y = proj_top > player_bottom and proj_bottom < player_top
-
-            if overlap_x and overlap_y:
                 return session
 
         return None
@@ -791,7 +697,10 @@ class CombatRuntime:
             if not proj.alive:
                 continue
 
-            if ignore_owner_client_id is not None and proj.owner_client_id == ignore_owner_client_id:
+            if (
+                ignore_owner_client_id is not None
+                and proj.owner_client_id == ignore_owner_client_id
+            ):
                 continue
 
             dx = proj.pos_x - center_x
@@ -830,7 +739,9 @@ class CombatRuntime:
         knockback_dir_x = direction_x
         knockback_dir_y = 1.0
 
-        mag = (knockback_dir_x * knockback_dir_x + knockback_dir_y * knockback_dir_y) ** 0.5
+        mag = (
+            knockback_dir_x * knockback_dir_x + knockback_dir_y * knockback_dir_y
+        ) ** 0.5
 
         if mag <= 0.0001:
             knockback_dir_x = direction_x
@@ -844,7 +755,9 @@ class CombatRuntime:
         knockback_growth = float(target.knockback_growth)
 
         # percentageFactor = 当前百分比 * 本次伤害 * 放大系数 / 体重
-        percentage_factor = (damage_before_hit * final_damage * knockback_growth) / safe_weight
+        percentage_factor = (
+            damage_before_hit * final_damage * knockback_growth
+        ) / safe_weight
 
         base_force = max(0.0, float(base_knockback))
 
@@ -904,7 +817,7 @@ class CombatRuntime:
             f"baseKB={base_force:.2f} percentFactor={percentage_factor:.3f} "
             f"scale={KNOCKBACK_SCALE:.2f} finalForce={final_force:.2f} "
             f"kb=({knockback_x:.2f},{knockback_y:.2f}) "
-            f"hitstunTicks={hitstun_ticks} until={target.hitstun_until_tick}"
+            f"hitstunTicks={hitstun_ticks} until={target.hitstun_until_tick}",
         )
 
     # ------------------------------------------------------------------
@@ -950,7 +863,7 @@ class CombatRuntime:
                     f"projId={proj.proj_id} "
                     f"weapon={proj.weapon_id} "
                     f"bulletId={getattr(proj, 'bullet_id', '')} "
-                    f"pos=({proj.pos_x:.2f},{proj.pos_y:.2f})"
+                    f"pos=({proj.pos_x:.2f},{proj.pos_y:.2f})",
                 )
 
                 continue
@@ -1004,7 +917,7 @@ class CombatRuntime:
                     f"effects={proj.effect_ids} "
                     f"from=({old_x:.2f},{old_y:.2f}) "
                     f"to=({next_x:.2f},{next_y:.2f}) "
-                    f"radius={proj.radius:.2f}"
+                    f"radius={proj.radius:.2f}",
                 )
 
                 handled = game_effects.apply_effects_on_projectile_world_hit(
@@ -1063,7 +976,7 @@ class CombatRuntime:
                     f"weapon={proj.weapon_id} "
                     f"bulletId={getattr(proj, 'bullet_id', '')} "
                     f"from=({old_x:.2f},{old_y:.2f}) "
-                    f"to=({next_x:.2f},{next_y:.2f})"
+                    f"to=({next_x:.2f},{next_y:.2f})",
                 )
 
                 handled = False
@@ -1116,9 +1029,7 @@ class CombatRuntime:
             proj.pos_y = next_y
 
             if abs(proj.vel_x) > 0.0001 or abs(proj.vel_y) > 0.0001:
-                proj.rotation_deg = math.degrees(
-                    math.atan2(proj.vel_y, proj.vel_x)
-                )
+                proj.rotation_deg = math.degrees(math.atan2(proj.vel_y, proj.vel_x))
 
             # ------------------------------------------------------------
             # 7) effects after move

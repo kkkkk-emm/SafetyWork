@@ -9,13 +9,13 @@
 
 运行前置条件:
 - 已执行 as/schema_auth.sql 初始化两张表。
-- 已运行 seed_auth_keys.py 生成 as/as_public_key.pem、AS 私钥和 K_TGS。
+- 已运行 seed_auth_keys.py 生成 as/as_public_key.json、AS 私钥和 K_TGS。
 - 已启动 as_server.py，并为服务端设置 AS_RSA_PRIVATE_KEY_PATH 和 K_TGS_BASE64。
 - 已安装 as/requirements.txt。
 
 输入环境变量:
 - AS_URL: AS WebSocket 地址，默认 ws://127.0.0.1:9000。
-- AS_PUBLIC_KEY_PATH: AS 公钥路径，默认 as/as_public_key.pem。
+- AS_PUBLIC_KEY_PATH: AS 公钥路径，默认 as/as_public_key.json。
 
 输出:
 - 全部断言通过时打印 "AS smoke test passed"。
@@ -51,7 +51,7 @@ from protocol import (
 
 AS_URL = os.getenv("AS_URL", "ws://127.0.0.1:9000")
 PUBLIC_KEY_PATH = Path(
-    os.getenv("AS_PUBLIC_KEY_PATH", str(Path(__file__).with_name("as_public_key.pem")))
+    os.getenv("AS_PUBLIC_KEY_PATH", str(Path(__file__).with_name("as_public_key.json")))
 )
 
 

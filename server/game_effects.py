@@ -1,72 +1,41 @@
 from math import cos, radians, sin, atan2
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from game_config import EFFECT_DB
+from game_debug import debug_print
+from game_effect_ids import normalize_effect_list
 from game_models import ServerProjectile
 
 try:
-    from game_config import DEBUG_PROJECTILE, DEBUG_ATTACK, DEBUG_HIT
+    from game_config import DEBUG_PROJECTILE
 except ImportError:
     DEBUG_PROJECTILE = False
-    DEBUG_ATTACK = False
-    DEBUG_HIT = True
-# ------------------------------------------------------------
-# Effect id 兼容层
-# 解决 Unity 发 hoversplit / delayedexplosion / swordwave
-# 但服务器 DB 写 hover_split / delayed_explosion / sword_wave 的问题
-# ------------------------------------------------------------
 
-EFFECT_ID_ALIASES = {
-    "hoversplit": "hover_split",
-    "hover_split": "hover_split",
-    "Effect_HoverSplit": "hover_split",
-
-    "delayedexplosion": "delayed_explosion",
-    "delayed_explosion": "delayed_explosion",
-    "Effect_DelayedExplosion": "delayed_explosion",
-
-    "swordwave": "sword_wave",
-    "sword_wave": "sword_wave",
-    "Effect_SwordWave": "sword_wave",
-
-    "parry": "parry",
-    "Effect_Parry": "parry",
-}
-
-def debug_print(enabled: bool, message: str) -> None:
-    if enabled:
-        print(message)
-def normalize_effect_id(effect_id: str) -> str:
-    if effect_id is None:
-        return ""
-
-    return EFFECT_ID_ALIASES.get(effect_id, effect_id)
+EffectConfig = Dict[str, Any]
 
 
-def normalize_effect_list(effect_ids: List[str]) -> List[str]:
-    result = []
-
-    if effect_ids is None:
-        return result
-
-    for effect_id in effect_ids:
-        normalized = normalize_effect_id(effect_id)
-        if normalized and normalized not in result:
-            result.append(normalized)
-
-    return result
+def _cfg_float(cfg: EffectConfig, key: str, default: float = 0.0) -> float:
+    try:
+        return float(cfg.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
-def get_effect_cfg(effect_id: str):
-    normalized = normalize_effect_id(effect_id)
-    return normalized, EFFECT_DB.get(normalized)
+def _cfg_int(cfg: EffectConfig, key: str, default: int = 0) -> int:
+    try:
+        return int(cfg.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 # ------------------------------------------------------------
 # Projectile spawned
 # ------------------------------------------------------------
 
-def apply_effects_on_projectile_spawned(combat_runtime, sessions, proj: ServerProjectile) -> None:
+
+def apply_effects_on_projectile_spawned(
+    combat_runtime, sessions, proj: ServerProjectile
+) -> None:
     """
     子弹生成时初始化 effect runtime state。
 
@@ -102,13 +71,14 @@ def apply_effects_on_projectile_spawned(combat_runtime, sessions, proj: ServerPr
             f"startVel=({proj.vel_x:.2f},{proj.vel_y:.2f}) "
             f"speed={speed:.2f} "
             f"bulletId={getattr(proj, 'bullet_id', '')} "
-            f"visualId={getattr(proj, 'visual_id', '')}"
+            f"visualId={getattr(proj, 'visual_id', '')}",
         )
 
 
 # ------------------------------------------------------------
 # Attack execute effects
 # ------------------------------------------------------------
+
 
 def apply_effects_on_attack_execute(
     combat_runtime,
@@ -149,7 +119,10 @@ def apply_effects_on_attack_execute(
 # Projectile before move
 # ------------------------------------------------------------
 
-def apply_projectile_effects_before_move(combat_runtime, sessions, proj: ServerProjectile) -> None:
+
+def apply_projectile_effects_before_move(
+    combat_runtime, sessions, proj: ServerProjectile
+) -> None:
     """
     子弹飞行前：
     - hover_split 线性减速到 0
@@ -169,12 +142,12 @@ def apply_projectile_effects_before_move(combat_runtime, sessions, proj: ServerP
             continue
 
         if effect_id == "hover_split":
-            slow_duration = max(0.0001, float(cfg["slow_duration"]))
+            slow_duration = max(0.0001, _cfg_float(cfg, "slow_duration"))
 
-            if getattr(proj, "hover_split_done", False):
+            if proj.hover_split_done:
                 continue
 
-            if not getattr(proj, "hover_split_initialized", False):
+            if not proj.hover_split_initialized:
                 # 保险：如果某颗子弹是旧逻辑生成，没走 apply_effects_on_projectile_spawned，也能初始化。
                 proj.hover_split_initialized = True
                 proj.hover_split_start_vel_x = proj.vel_x
@@ -192,14 +165,16 @@ def apply_projectile_effects_before_move(combat_runtime, sessions, proj: ServerP
 
             t = min(1.0, proj.timer / slow_duration)
 
-            start_vx = float(getattr(proj, "hover_split_start_vel_x", proj.vel_x))
-            start_vy = float(getattr(proj, "hover_split_start_vel_y", proj.vel_y))
+            start_vx = proj.hover_split_start_vel_x
+            start_vy = proj.hover_split_start_vel_y
 
             proj.vel_x = start_vx * (1.0 - t)
             proj.vel_y = start_vy * (1.0 - t)
 
             if abs(proj.vel_x) > 0.0001 or abs(proj.vel_y) > 0.0001:
-                proj.rotation_deg = atan2(proj.vel_y, proj.vel_x) * 180.0 / 3.141592653589793
+                proj.rotation_deg = (
+                    atan2(proj.vel_y, proj.vel_x) * 180.0 / 3.141592653589793
+                )
 
             return
 
@@ -208,7 +183,10 @@ def apply_projectile_effects_before_move(combat_runtime, sessions, proj: ServerP
 # Projectile after move
 # ------------------------------------------------------------
 
-def apply_projectile_effects_after_move(combat_runtime, sessions, proj: ServerProjectile, tick: int) -> None:
+
+def apply_projectile_effects_after_move(
+    combat_runtime, sessions, proj: ServerProjectile, tick: int
+) -> None:
     """
     子弹飞行后：
     - delayed_explosion 时间到爆
@@ -225,7 +203,7 @@ def apply_projectile_effects_after_move(combat_runtime, sessions, proj: ServerPr
             continue
 
         if effect_id == "delayed_explosion":
-            if proj.timer >= float(cfg["delay_time"]):
+            if proj.timer >= _cfg_float(cfg, "delay_time"):
                 trigger_delayed_explosion(
                     combat_runtime,
                     sessions,
@@ -238,9 +216,9 @@ def apply_projectile_effects_after_move(combat_runtime, sessions, proj: ServerPr
                 return
 
         elif effect_id == "hover_split":
-            slow_duration = float(cfg["slow_duration"])
+            slow_duration = _cfg_float(cfg, "slow_duration")
 
-            if proj.timer >= slow_duration and not getattr(proj, "hover_split_done", False):
+            if proj.timer >= slow_duration and not proj.hover_split_done:
                 trigger_hover_split(combat_runtime, proj, cfg)
 
                 proj.hover_split_done = True
@@ -261,7 +239,10 @@ def apply_projectile_effects_after_move(combat_runtime, sessions, proj: ServerPr
 # Projectile hit world / player
 # ------------------------------------------------------------
 
-def apply_effects_on_projectile_world_hit(combat_runtime, sessions, proj: ServerProjectile, tick: int) -> bool:
+
+def apply_effects_on_projectile_world_hit(
+    combat_runtime, sessions, proj: ServerProjectile, tick: int
+) -> bool:
     """
     返回值：
     True  = 这个 hit 已经被 effect 处理，比如爆炸
@@ -289,7 +270,9 @@ def apply_effects_on_projectile_world_hit(combat_runtime, sessions, proj: Server
     return False
 
 
-def apply_effects_on_projectile_player_hit(combat_runtime, sessions, proj: ServerProjectile, attacker, target, tick: int) -> bool:
+def apply_effects_on_projectile_player_hit(
+    combat_runtime, sessions, proj: ServerProjectile, attacker, target, tick: int
+) -> bool:
     """
     返回值：
     True  = 命中行为已被 effect 接管
@@ -321,13 +304,14 @@ def apply_effects_on_projectile_player_hit(combat_runtime, sessions, proj: Serve
 # Parry
 # ------------------------------------------------------------
 
-def execute_parry(combat_runtime, sessions, attacker, cfg: Dict) -> None:
+
+def execute_parry(combat_runtime, sessions, attacker, cfg: EffectConfig) -> None:
     """
     第一版简化：
     攻击瞬间检查附近 projectile 并反弹。
     """
     radius = 1.2
-    speed_mul = float(cfg["deflect_speed_multiplier"])
+    speed_mul = _cfg_float(cfg, "deflect_speed_multiplier")
 
     nearby_projectiles = combat_runtime.find_projectiles_in_radius(
         center_x=attacker.pos_x,
@@ -342,7 +326,9 @@ def execute_parry(combat_runtime, sessions, attacker, cfg: Dict) -> None:
         proj.vel_y = -proj.vel_y * speed_mul
 
         if abs(proj.vel_x) > 0.0001 or abs(proj.vel_y) > 0.0001:
-            proj.rotation_deg = atan2(proj.vel_y, proj.vel_x) * 180.0 / 3.141592653589793
+            proj.rotation_deg = (
+                atan2(proj.vel_y, proj.vel_x) * 180.0 / 3.141592653589793
+            )
 
         combat_runtime.push_event(
             "PLAYER_PARRIED",
@@ -358,6 +344,7 @@ def execute_parry(combat_runtime, sessions, attacker, cfg: Dict) -> None:
 # Sword wave
 # ------------------------------------------------------------
 
+
 def execute_sword_wave(
     combat_runtime,
     attacker,
@@ -365,7 +352,7 @@ def execute_sword_wave(
     aim_y: float,
     weapon_id: str,
     effect_ids: List[str],
-    cfg: Dict,
+    cfg: EffectConfig,
 ) -> None:
     mag = (aim_x * aim_x + aim_y * aim_y) ** 0.5
 
@@ -377,18 +364,24 @@ def execute_sword_wave(
     dir_x = aim_x / mag
     dir_y = aim_y / mag
 
-    new_effects = normalize_effect_list(effect_ids) if cfg.get("inherit_runtime_effects", True) else []
+    new_effects = (
+        normalize_effect_list(effect_ids)
+        if cfg.get("inherit_runtime_effects", True)
+        else []
+    )
     new_effects = [
-    eid for eid in new_effects
-    if eid not in ("sword_wave", "hover_split", "delayed_explosion")
+        eid
+        for eid in new_effects
+        if eid not in ("sword_wave", "hover_split", "delayed_explosion")
     ]
 
-    damage_mul = float(cfg["damage_multiplier"])
-    speed = float(cfg["speed"])
+    damage_mul = _cfg_float(cfg, "damage_multiplier")
+    speed = _cfg_float(cfg, "speed")
+    projectile_kind = str(cfg.get("projectile_kind", "sword_wave"))
 
     combat_runtime.spawn_custom_projectile(
         owner_client_id=attacker.client_id,
-        weapon_id=cfg.get("projectile_kind", "sword_wave"),
+        weapon_id=projectile_kind,
         effect_ids=new_effects,
         spawn_x=attacker.pos_x + dir_x * 0.8,
         spawn_y=attacker.pos_y + 0.4 + dir_y * 0.2,
@@ -407,16 +400,17 @@ def execute_sword_wave(
 # Delayed explosion
 # ------------------------------------------------------------
 
+
 def trigger_delayed_explosion(
     combat_runtime,
     sessions,
     proj: ServerProjectile,
-    cfg: Dict,
+    cfg: EffectConfig,
     tick: int,
     reason: str = "",
 ) -> None:
-    radius = float(cfg["explosion_radius"])
-    damage_mul = float(cfg["damage_multiplier"])
+    radius = _cfg_float(cfg, "explosion_radius")
+    damage_mul = _cfg_float(cfg, "damage_multiplier")
 
     combat_runtime.push_event(
         "EXPLOSION_TRIGGERED",
@@ -437,7 +431,7 @@ def trigger_delayed_explosion(
         f"owner={proj.owner_client_id} "
         f"reason={reason} "
         f"pos=({proj.pos_x:.2f},{proj.pos_y:.2f}) "
-        f"radius={radius:.2f}"
+        f"radius={radius:.2f}",
     )
 
     hit_targets = combat_runtime.find_players_in_radius(
@@ -474,14 +468,17 @@ def trigger_delayed_explosion(
 # Hover split
 # ------------------------------------------------------------
 
-def trigger_hover_split(combat_runtime, proj: ServerProjectile, cfg: Dict) -> None:
-    split_count = int(cfg["split_count"])
+
+def trigger_hover_split(
+    combat_runtime, proj: ServerProjectile, cfg: EffectConfig
+) -> None:
+    split_count = _cfg_int(cfg, "split_count")
 
     if split_count <= 0:
         return
 
-    base_dir_x = float(getattr(proj, "hover_split_base_dir_x", 1.0))
-    base_dir_y = float(getattr(proj, "hover_split_base_dir_y", 0.0))
+    base_dir_x = proj.hover_split_base_dir_x
+    base_dir_y = proj.hover_split_base_dir_y
 
     base_angle = atan2(base_dir_y, base_dir_x)
 
@@ -491,12 +488,9 @@ def trigger_hover_split(combat_runtime, proj: ServerProjectile, cfg: Dict) -> No
     child_effects = normalize_effect_list(list(proj.effect_ids))
 
     if inherit_except_self:
-        child_effects = [
-        eid for eid in child_effects
-        if eid not in ("hover_split")
-    ]
+        child_effects = [eid for eid in child_effects if eid != "hover_split"]
 
-    speed = float(getattr(proj, "hover_split_start_speed", 0.0))
+    speed = proj.hover_split_start_speed
 
     if speed <= 0.0001:
         speed = (proj.vel_x * proj.vel_x + proj.vel_y * proj.vel_y) ** 0.5
@@ -515,7 +509,7 @@ def trigger_hover_split(combat_runtime, proj: ServerProjectile, cfg: Dict) -> No
         f"bulletId={bullet_id} "
         f"visualId={visual_id} "
         f"speed={speed:.2f} "
-        f"effects={child_effects}"
+        f"effects={child_effects}",
     )
 
     for i in range(split_count):

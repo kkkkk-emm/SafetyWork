@@ -20,8 +20,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from cryptography.hazmat.primitives import serialization
-
 try:
     import websockets
 except ImportError as exc:  # pragma: no cover - only hit when dependencies missing.
@@ -42,6 +40,7 @@ from crypto_utils import (
     generate_salt,
     normalize_username,
     rsa_decrypt_object,
+    validate_rsa_private_key,
     validate_password_policy,
     verify_password_hash,
 )
@@ -170,9 +169,9 @@ class AsServer:
             )
 
         try:
-            serialization.load_pem_private_key(private_pem, password=None)
-        except Exception as exc:
-            raise ConfigError("AS RSA private key PEM is invalid") from exc
+            validate_rsa_private_key(private_pem)
+        except CryptoError as exc:
+            raise ConfigError("AS RSA private key JSON is invalid") from exc
 
         k_tgs = b64decode(self.config.k_tgs_base64)
         if len(k_tgs) != 8:
@@ -269,7 +268,7 @@ class AsServer:
         - msg: 顶层协议消息，必须包含 payload 字段。
 
         返回:
-        - RSA-OAEP-SHA256 解密后的 JSON 对象。
+        - RSA-RAW-BLOCKS 解密后的 JSON 对象。
 
         异常:
         - KEY_NOT_CONFIGURED: AS 私钥尚未加载。
@@ -367,7 +366,7 @@ class AsServer:
         输入报文:
         - type="REGISTER_REQ"。
         - clientId: 客户端运行期实例 ID。
-        - payload: Base64(RSA-OAEP-SHA256({"username","password"}))。
+        - payload: Base64(RSA-RAW-BLOCKS({"username","password"}))。
 
         输出报文:
         - REGISTER_REP.payload: 普通 JSON 字符串 {"ok":true,"userId":...}。
@@ -458,7 +457,7 @@ class AsServer:
         输入报文:
         - type="AS_REQ"。
         - clientId: 客户端运行期实例 ID。
-        - payload: Base64(RSA-OAEP-SHA256({"username","password","nonce"}))。
+        - payload: Base64(RSA-RAW-BLOCKS({"username","password","nonce"}))。
 
         输出报文:
         - AS_REP.ticket: Base64(DES-CBC-PKCS7(K_TGS, TGT_JSON))。
@@ -610,7 +609,7 @@ class AsServer:
         - type="CHANGE_PASSWORD_REQ"。
         - clientId: 客户端运行期实例 ID。
         - payload:
-          Base64(RSA-OAEP-SHA256({"username","oldPassword","newPassword"}))。
+          Base64(RSA-RAW-BLOCKS({"username","oldPassword","newPassword"}))。
 
         输出报文:
         - CHANGE_PASSWORD_REP.payload: 普通 JSON 字符串 {"ok":true}。

@@ -5,14 +5,15 @@
 """
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional
 
 from gs_config import DbConfig
 
+_PYMYSQL_IMPORT_ERROR: Optional[BaseException]
+
 try:
-    import pymysql
-    from pymysql.cursors import DictCursor
+    import pymysql  # type: ignore[import-untyped]
+    from pymysql.cursors import DictCursor  # type: ignore[import-untyped]
 except ImportError as exc:
     pymysql = None
     DictCursor = None
@@ -23,6 +24,7 @@ else:
 
 class DatabaseError(RuntimeError):
     """数据库访问错误。"""
+
     pass
 
 

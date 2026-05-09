@@ -8,17 +8,18 @@
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 class ConfigError(RuntimeError):
     """配置错误。"""
+
     pass
 
 
 @dataclass(frozen=True)
 class DbConfig:
     """MySQL 连接配置。"""
+
     host: str
     port: int
     user: str
@@ -30,6 +31,7 @@ class DbConfig:
 @dataclass(frozen=True)
 class GsConfig:
     """GS 运行配置。"""
+
     host: str
     port: int
     gs_service_name: str
@@ -72,7 +74,7 @@ def load_gs_config() -> GsConfig:
         or "game/ws@127.0.0.1:8765"
     )
     return GsConfig(
-        host=os.getenv("GS_HOST", "0.0.0.0").strip() or "0.0.0.0",
+        host=os.getenv("GS_HOST", "127.0.0.1").strip() or "127.0.0.1",
         port=_int_env("GS_PORT", 8765),
         gs_service_name=gs_service_name,
         authenticator_window_seconds=_int_env("AUTH_AUTHENTICATOR_WINDOW_SECONDS", 30),
