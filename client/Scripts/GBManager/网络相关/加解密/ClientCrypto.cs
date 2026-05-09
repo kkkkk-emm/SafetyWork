@@ -1,14 +1,7 @@
 using System;
-using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using UnityEngine;
-
-using Org.BouncyCastle.Crypto;
-using Org.BouncyCastle.Crypto.Encodings;
-using Org.BouncyCastle.Crypto.Engines;
-using Org.BouncyCastle.Crypto.Parameters;
-using Org.BouncyCastle.OpenSsl;
 
 public static class ClientCrypto
 {
@@ -120,12 +113,10 @@ public static class ClientCrypto
     // ============================================================
     // DES-CBC-PKCS7
     //
-    // Python 端格式：
+    // 格式：
     // Base64(iv + ciphertext)
     //
-    // key 必须 8 字节。
-    // iv 随机 8 字节。
-    // 明文是 UTF-8 JSON。
+    // DES block / CBC / PKCS7 由 CustomDes.cs 自己实现。
     // ============================================================
 
     public static string DesEncryptJson(byte[] key, string json)
@@ -136,6 +127,21 @@ public static class ClientCrypto
         if (json == null)
             json = "{}";
 
+        CryptoTrace.Log(
+            "DES 加密开始",
+            "格式：Base64(iv + ciphertext)，算法：自写 DES-CBC-PKCS7。"
+        );
+
+        CryptoTrace.Log(
+            "1. DES 明文 JSON",
+            json
+        );
+
+        CryptoTrace.Log(
+            "2. DES Key",
+            CryptoTrace.Hex(key)
+        );
+
         byte[] iv = new byte[DesBlockBytes];
 
         using (var rng = RandomNumberGenerator.Create())
@@ -145,31 +151,33 @@ public static class ClientCrypto
 
         byte[] plainBytes = Encoding.UTF8.GetBytes(json);
 
-        using (System.Security.Cryptography.DES des = System.Security.Cryptography.DES.Create())
-        {
-            des.Mode = CipherMode.CBC;
-            des.Padding = PaddingMode.PKCS7;
-            des.Key = key;
-            des.IV = iv;
+        CryptoTrace.Log(
+            "3. 随机 IV 和明文字节",
+            $"IV:\n{CryptoTrace.Hex(iv)}\n\n" +
+            $"Plain Bytes:\n{CryptoTrace.Hex(plainBytes, 96)}"
+        );
 
-            using (ICryptoTransform encryptor = des.CreateEncryptor())
-            {
-                byte[] cipherBytes = encryptor.TransformFinalBlock(
-                    plainBytes,
-                    0,
-                    plainBytes.Length
-                );
+        byte[] cipherBytes = CustomDes.EncryptCbcPkcs7(
+            key,
+            iv,
+            plainBytes
+        );
 
-                byte[] output = new byte[iv.Length + cipherBytes.Length];
+        byte[] output = new byte[iv.Length + cipherBytes.Length];
 
-                Buffer.BlockCopy(iv, 0, output, 0, iv.Length);
-                Buffer.BlockCopy(cipherBytes, 0, output, iv.Length, cipherBytes.Length);
+        Buffer.BlockCopy(iv, 0, output, 0, iv.Length);
+        Buffer.BlockCopy(cipherBytes, 0, output, iv.Length, cipherBytes.Length);
 
-                return Convert.ToBase64String(output);
-            }
-        }
+        string result = Convert.ToBase64String(output);
+
+        CryptoTrace.Log(
+            "4. DES-CBC-PKCS7 加密结果",
+            $"Ciphertext:\n{CryptoTrace.Hex(cipherBytes, 96)}\n\n" +
+            $"Base64(iv + ciphertext):\n{CryptoTrace.Mask(result, 40, 24)}"
+        );
+
+        return result;
     }
-
     public static string DesDecryptJson(byte[] key, string ciphertextB64)
     {
         if (key == null || key.Length != DesKeyBytes)
@@ -177,6 +185,16 @@ public static class ClientCrypto
 
         if (string.IsNullOrWhiteSpace(ciphertextB64))
             throw new ArgumentException("DES ciphertext is empty.");
+
+        CryptoTrace.Log(
+            "DES 解密开始",
+            "格式：Base64(iv + ciphertext)，算法：自写 DES-CBC-PKCS7。"
+        );
+
+        CryptoTrace.Log(
+            "1. DES Key",
+            CryptoTrace.Hex(key)
+        );
 
         byte[] raw = Convert.FromBase64String(ciphertextB64.Trim());
 
@@ -189,24 +207,27 @@ public static class ClientCrypto
         Buffer.BlockCopy(raw, 0, iv, 0, DesBlockBytes);
         Buffer.BlockCopy(raw, DesBlockBytes, cipherBytes, 0, cipherBytes.Length);
 
-        using (System.Security.Cryptography.DES des = System.Security.Cryptography.DES.Create())
-        {
-            des.Mode = CipherMode.CBC;
-            des.Padding = PaddingMode.PKCS7;
-            des.Key = key;
-            des.IV = iv;
+        CryptoTrace.Log(
+            "2. 拆分 Base64 密文",
+            $"Raw:\n{CryptoTrace.Hex(raw, 96)}\n\n" +
+            $"IV:\n{CryptoTrace.Hex(iv)}\n\n" +
+            $"Ciphertext:\n{CryptoTrace.Hex(cipherBytes, 96)}"
+        );
 
-            using (ICryptoTransform decryptor = des.CreateDecryptor())
-            {
-                byte[] plainBytes = decryptor.TransformFinalBlock(
-                    cipherBytes,
-                    0,
-                    cipherBytes.Length
-                );
+        byte[] plainBytes = CustomDes.DecryptCbcPkcs7(
+            key,
+            iv,
+            cipherBytes
+        );
 
-                return Encoding.UTF8.GetString(plainBytes);
-            }
-        }
+        string plainJson = Encoding.UTF8.GetString(plainBytes);
+
+        CryptoTrace.Log(
+            "3. DES-CBC-PKCS7 解密结果",
+            plainJson
+        );
+
+        return plainJson;
     }
 
     public static string DesEncryptJsonWithBase64Key(string keyB64, string json)
@@ -227,8 +248,9 @@ public static class ClientCrypto
     // AS 请求 payload 格式：
     // Base64(RSA-OAEP-SHA256(JSON))
     //
-    // 用 BouncyCastle 实现，绕开 Unity/Mono 不支持
-    // RSA.ImportSubjectPublicKeyInfo 的问题。
+    // 这里不再使用 BouncyCastle。
+    // PEM / DER / ASN.1 公钥解析由 PemPublicKeyParser.cs 完成。
+    // OAEP-SHA256 + RSA m^e mod n 由 CustomRsa.cs 完成。
     // ============================================================
 
     public static string RsaEncryptJsonWithPublicPem(string publicPem, string json)
@@ -241,79 +263,68 @@ public static class ClientCrypto
 
         try
         {
-            RsaKeyParameters publicKey = LoadRsaPublicKeyFromPem(publicPem);
+            CryptoTrace.Clear();
+
+            CryptoTrace.Log(
+                "RSA 加密开始",
+                "用途：客户端把 REGISTER_REQ / AS_REQ / CHANGE_PASSWORD_REQ 的敏感 payload 加密后发给 AS。"
+            );
+
+            CryptoTrace.Log(
+                "1. 明文 JSON",
+                json
+            );
+
+            PemRsaPublicKey publicKey =
+                PemPublicKeyParser.ParseSubjectPublicKeyInfo(publicPem);
+
+            CryptoTrace.Log(
+                "2. 解析 AS 公钥 PEM",
+                $"Modulus n:\n{CryptoTrace.Hex(publicKey.Modulus, 96)}\n\n" +
+                $"Exponent e:\n{CryptoTrace.Hex(publicKey.Exponent)}\n\n" +
+                $"说明：RSA 公钥由 n 和 e 组成，后续执行 c = m^e mod n。"
+            );
+
             byte[] plainBytes = Encoding.UTF8.GetBytes(json);
 
-            OaepEncoding cipher = new OaepEncoding(
-                new RsaEngine(),
-                new Org.BouncyCastle.Crypto.Digests.Sha256Digest(),
-                new Org.BouncyCastle.Crypto.Digests.Sha256Digest(),
-                null
+            CryptoTrace.Log(
+                "3. UTF-8 明文字节",
+                CryptoTrace.BytesInfo(plainBytes)
             );
 
-            cipher.Init(true, publicKey);
-
-            byte[] encrypted = cipher.ProcessBlock(
-                plainBytes,
-                0,
-                plainBytes.Length
+            byte[] encrypted = CustomRsa.EncryptOaepSha256(
+                publicKey.Modulus,
+                publicKey.Exponent,
+                plainBytes
             );
 
-            return Convert.ToBase64String(encrypted);
+            string encryptedB64 = Convert.ToBase64String(encrypted);
+
+            CryptoTrace.Log(
+                "4. RSA-OAEP-SHA256 加密结果",
+                $"Cipher Hex:\n{CryptoTrace.Hex(encrypted, 96)}\n\n" +
+                $"Cipher Base64:\n{CryptoTrace.Mask(encryptedB64, 40, 24)}\n\n" +
+                $"说明：最终 payload = Base64(RSA-OAEP-SHA256(JSON))。"
+            );
+
+            return encryptedB64;
         }
         catch (Exception ex)
         {
             Debug.LogError(
-                "[ClientCrypto] RSA-OAEP-SHA256 encrypt failed. " +
-                "请确认 as_public_key.txt 内容完整，并且 Unity 已成功导入 BouncyCastle。\n" +
+                "[ClientCrypto] Custom RSA-OAEP-SHA256 encrypt failed. " +
+                "请确认 as_public_key.txt 内容完整，格式是 PEM PUBLIC KEY。\n" +
                 ex
+            );
+
+            CryptoTrace.Log(
+                "RSA 加密失败",
+                ex.ToString()
             );
 
             throw;
         }
     }
-
-    private static RsaKeyParameters LoadRsaPublicKeyFromPem(string publicPem)
-    {
-        using (StringReader sr = new StringReader(publicPem))
-        {
-            PemReader reader = new PemReader(sr);
-            object pemObject = reader.ReadObject();
-
-            if (pemObject == null)
-                throw new ArgumentException("Invalid RSA public PEM: empty PEM object.");
-
-            if (pemObject is RsaKeyParameters rsaKey)
-            {
-                if (rsaKey.IsPrivate)
-                    throw new ArgumentException("Expected RSA public key, got private key.");
-
-                return rsaKey;
-            }
-
-            if (pemObject is AsymmetricCipherKeyPair pair)
-            {
-                if (pair.Public is RsaKeyParameters pairPublicKey)
-                    return pairPublicKey;
-            }
-
-            if (pemObject is AsymmetricKeyParameter asymmetricKey)
-            {
-                if (asymmetricKey is RsaKeyParameters asymmetricRsaKey)
-                {
-                    if (asymmetricRsaKey.IsPrivate)
-                        throw new ArgumentException("Expected RSA public key, got private key.");
-
-                    return asymmetricRsaKey;
-                }
-            }
-
-            throw new ArgumentException(
-                "Unsupported PEM key type: " + pemObject.GetType().FullName
-            );
-        }
-    }
-
     // ============================================================
     // Validation helpers
     // ============================================================
