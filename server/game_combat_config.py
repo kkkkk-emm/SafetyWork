@@ -1,3 +1,9 @@
+"""战斗配置查询——武器/子弹安全的查找函数。
+
+所有查找都有 fallback 链：指定 ID → 默认 ID → 数据库第一个条目。
+防止配置错误导致 KeyError 崩溃，同时打印警告方便排查。
+"""
+
 from __future__ import annotations
 
 from game_config import BULLET_DB, WEAPON_DB
@@ -14,6 +20,7 @@ DEFAULT_BULLET_ID = "普通子弹"
 
 
 def get_weapon_cfg(weapon_id: str) -> dict:
+    """安全查找武器配置——找不到时回退到手枪，打印警告。"""
     if weapon_id in WEAPON_DB:
         return WEAPON_DB[weapon_id]
 
@@ -60,6 +67,7 @@ def resolve_visual_id(bullet_id: str, bullet_cfg: dict) -> str:
 
 
 def normalize_special_bullet_id(bullet_id: str) -> str:
+    """归一化特殊子弹 ID 别名——客户端可能传英文或驼峰名，统一为中文标准名。"""
     if bullet_id in ("sword_wave", "swordwave", "SwordWave"):
         return "剑气"
     if bullet_id in ("pistol_bullet", "normal_gun"):

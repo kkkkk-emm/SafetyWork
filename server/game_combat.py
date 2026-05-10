@@ -1,3 +1,13 @@
+"""GS 战斗系统——攻击执行 / 投射物推进 / 碰撞检测 / 伤害击退。
+
+核心循环（每 tick 调用一次）：
+1. 处理玩家输入 → 移动/跳跃/攻击
+2. execute_attack() → 生成 ServerProjectile 或 ServerMeleeHitbox
+3. step_projectiles() → 推进投射物，检测扫掠碰撞（世界/玩家）
+4. step_melee_hitboxes() → 检测近战圆形判定
+5. apply_hit() → 结算伤害 + 大乱斗式击退（百分比越高飞越远）
+"""
+
 from typing import Dict, List, Optional
 import math
 
@@ -46,6 +56,11 @@ from game_models import (
 
 
 class CombatRuntime:
+    """战斗运行时——管理所有投射物、近战判定盒、事件队列。
+
+    设计为独立于 RelayServer 的纯战斗逻辑类，通过参数注入 sessions 而非持有引用，
+    方便单元测试和逻辑复用。
+    """
     def __init__(self) -> None:
         self.projectiles: Dict[int, ServerProjectile] = {}
         self.melee_hitboxes: Dict[int, ServerMeleeHitbox] = {}
@@ -93,7 +108,7 @@ class CombatRuntime:
         self.pending_events.clear()
 
     # ------------------------------------------------------------------
-    # Attack entry
+    # Attack entry — 攻击入口，判断 ranged/melee 并分派
     # ------------------------------------------------------------------
 
     def execute_attack(
@@ -159,7 +174,8 @@ class CombatRuntime:
         return aim_x / mag, aim_y / mag
 
     # ------------------------------------------------------------------
-    # Projectile spawning
+    # Projectile spawning — 根据武器配置生成投射物
+    # 支持霰弹枪多弹丸（pellet_count > 1）和散弹角度（spread_angle_deg）
     # ------------------------------------------------------------------
 
     def spawn_projectile(
@@ -496,7 +512,12 @@ class CombatRuntime:
         )
 
     # ------------------------------------------------------------------
-    # Collision helpers
+    # Collision helpers — 扫掠碰撞检测
+    #
+    # 关键设计：投射物每帧移动距离可能超过自身半径，简单的位置重叠检测会漏碰撞。
+    # 因此使用 swept AABB（线段→AABB）检测，避免"穿透"问题。
+    # 算法：将线段参数化 x(t) = x1 + t*(x2-x1)，求与 AABB 各边的交点 t，
+    #       若存在 t∈[0,1] 使得交点集有重叠区间，则碰撞。
     # ------------------------------------------------------------------
 
     def segment_intersects_aabb(
@@ -510,6 +531,7 @@ class CombatRuntime:
         bottom: float,
         top: float,
     ) -> bool:
+        """线段 (x1,y1)→(x2,y2) 是否与轴对齐矩形相交。"""
         dx = x2 - x1
         dy = y2 - y1
 
@@ -712,7 +734,13 @@ class CombatRuntime:
         return result
 
     # ------------------------------------------------------------------
-    # Damage / knockback
+    # Damage / knockback — 大乱斗击飞公式
+    #
+    # 公式：final_force = (base_knockback + percentage_factor) * KNOCKBACK_SCALE
+    #   percentage_factor = damage_before * damage * knockback_growth / weight
+    #
+    # 设计意图：伤害累积越高 → 击飞越远 → 更容易出界死亡（大乱斗核心机制）
+    # weight 越高 → 击飞越近（重角色抗性）; knockback_growth 越高 → 后期越容易被击飞
     # ------------------------------------------------------------------
 
     def apply_hit(
@@ -761,22 +789,22 @@ class CombatRuntime:
 
         base_force = max(0.0, float(base_knockback))
 
-        # 这里要用总缩放，不然手感容易爆炸
+        # 大乱斗击飞公式：基础力 + 百分比修正，再乘以全局缩放
         final_force = (base_force + percentage_factor) * KNOCKBACK_SCALE
 
         knockback_x = knockback_dir_x * final_force
         knockback_y = knockback_dir_y * final_force
 
-        # 再结算伤害百分比
+        # 伤害百分比只增不减（服务端权威，客户端不可写入）
         target.damage_percent = damage_before_hit + final_damage
 
-        # 计算受击硬直 tick
+        # 受击硬直 tick 数 = 基础固定值 + 伤害比例加成（百分比越高硬直越久）
         hitstun_ticks = int(
             HITSTUN_BASE_TICKS + percentage_factor * HITSTUN_PERCENT_FACTOR_TO_TICKS
         )
         hitstun_ticks = max(HITSTUN_BASE_TICKS, hitstun_ticks)
 
-        # 服务器权威击退状态
+        # ── 服务端权威状态覆写（客户端无法通过 INPUT 伪造这些值）──
         target.vel_x = knockback_x
         target.vel_y = knockback_y
 
@@ -821,7 +849,17 @@ class CombatRuntime:
         )
 
     # ------------------------------------------------------------------
-    # Tick simulation
+    # Tick simulation — 每帧推进投射物
+    #
+    # 7 步流水线：
+    # 1. TTL 超时 → 销毁
+    # 2. before_move 效果（hover_split 减速）
+    # 3. 移动 old→next
+    # 4. swept world collision → 撞地图 → 触发 effect/销毁
+    # 5. swept player collision → 撞玩家 → apply_hit / 触发 effect
+    # 6. 无碰撞 → 提交移动，更新旋转角
+    # 7. after_move 效果（delayed_explosion 定时爆炸 / hover_split 分裂）
+    # 8. 清理 dead 投射物
     # ------------------------------------------------------------------
 
     def step_projectiles(

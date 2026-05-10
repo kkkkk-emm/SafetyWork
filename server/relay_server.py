@@ -132,6 +132,7 @@ class RelayServer(
                 pass
 
     async def maintenance_loop(self) -> None:
+        # 定期清理防重放缓存
         while True:
             await asyncio.sleep(5)
             self.prune_replay_cache(now_ms())
@@ -298,6 +299,7 @@ class RelayServer(
             auth_nonce = require_string_field(auth, "nonce")
             self._expire_reconnect_grace(current_ms)
 
+            # 创建新的会话
             session_id = f"sess-{ticket.user_id}-{generate_nonce()[:8]}"
             session = self.sessions.get(websocket)
             if session is None:
