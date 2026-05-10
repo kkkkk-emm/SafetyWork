@@ -719,257 +719,319 @@ class RelayServer(
         return True
 
     async def handle_input(self, websocket: Any, data: Dict[str, Any]) -> None:
-        session = self._require_session(websocket)
-        if not session.room_id or not session.client_id:
-            raise GsRequestError("NOT_IN_ROOM")
+            session = self._require_session(websocket)
+            if not session.room_id or not session.client_id:
+                raise GsRequestError("NOT_IN_ROOM")
 
-        require_fields(data, ("sessionId", "roomId", "payload"))
-        if require_string_field(data, "sessionId") != session.session_id:
-            raise GsRequestError("SESSION_MISMATCH")
+            require_fields(data, ("sessionId", "roomId", "payload"))
 
-        payload = self.decrypt_payload(session, data)
-        if require_string_field(payload, "type") != TYPE_INPUT:
-            raise GsRequestError("TYPE_MISMATCH")
-        if require_string_field(payload, "sessionId") != session.session_id:
-            raise GsRequestError("SESSION_MISMATCH")
-        if require_string_field(payload, "roomId") != session.room_id:
-            raise GsRequestError("ROOM_MISMATCH")
+            if require_string_field(data, "sessionId") != session.session_id:
+                raise GsRequestError("SESSION_MISMATCH")
 
-        # 首个 INPUT 将房间从 STARTING 切换到 PLAYING
-        room_state = self.room_states.get(session.room_id)
-        if room_state is not None and room_state.get("status") == "STARTING":
-            room_state["status"] = "PLAYING"
-            print(f"[ROOM PLAYING] room={session.room_id}")
+            if require_string_field(data, "roomId") != session.room_id:
+                raise GsRequestError("ROOM_MISMATCH")
 
-        cmd = self.parse_input_payload(payload)
+            # ------------------------------------------------------------
+            # 高频 INPUT payload 兼容两种格式：
+            #
+            # payloadEncrypted=true:
+            #   payload 是 Base64(DES-CBC-PKCS7(JSON))
+            #
+            # payloadEncrypted=false:
+            #   payload 是明文 JSON 字符串
+            #
+            # 没传 payloadEncrypted 时默认 true，兼容旧客户端。
+            # ------------------------------------------------------------
 
-        # ── seq 连续性校验 (P0-3) ──
-        if session.last_seq >= 0 and cmd.seq <= session.last_seq:
-            reject_reason = f"seq not increasing: {cmd.seq} <= {session.last_seq}"
-            print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
-            await self.maybe_broadcast_snapshot(
-                session.room_id, websocket, reject_reason
-            )
-            return
+            payload_encrypted = bool(data.get("payloadEncrypted", True))
 
-        # ── 拒绝客户端上传服务端权威字段 (P1-4) ──
-        forbidden_keys = {
-            "damagePercent",
-            "stocks",
-            "isDead",
-            "damage",
-            "hitResult",
-            "killCount",
-        }
-        payload_keys = set(payload.keys())
-        found_forbidden = payload_keys & forbidden_keys
-        if found_forbidden:
-            reject_reason = f"forbidden fields in INPUT: {sorted(found_forbidden)}"
-            print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
-            await self.maybe_broadcast_snapshot(
-                session.room_id, websocket, reject_reason
-            )
-            return
+            if payload_encrypted:
+                payload = self.decrypt_payload(session, data)
+            else:
+                raw_payload = data.get("payload")
 
-        session.last_seq = cmd.seq
-        reject_reason = ""
+                if not isinstance(raw_payload, str) or raw_payload.strip() == "":
+                    raise GsRequestError("INVALID_PAYLOAD")
 
-        # ── 死亡等待期间 ──
-        if session.is_dead and getattr(session, "respawn_at_tick", -1) > 0:
-            session.vel_x = 0.0
-            session.vel_y = 0.0
-            session.accepted_grounded = False
-            session.accepted_state = "Dead"
-            if self.tick >= session.respawn_at_tick and session.stocks > 0:
-                respawn_point = RESPAWN_POINTS.get(
-                    session.client_id, {"x": 0.0, "y": 3.0}
+                try:
+                    payload = json.loads(raw_payload)
+                except json.JSONDecodeError as exc:
+                    raise GsRequestError("INVALID_PAYLOAD") from exc
+
+                if not isinstance(payload, dict):
+                    raise GsRequestError("INVALID_PAYLOAD")
+
+            if require_string_field(payload, "type") != TYPE_INPUT:
+                raise GsRequestError("TYPE_MISMATCH")
+
+            if require_string_field(payload, "sessionId") != session.session_id:
+                raise GsRequestError("SESSION_MISMATCH")
+
+            if require_string_field(payload, "roomId") != session.room_id:
+                raise GsRequestError("ROOM_MISMATCH")
+
+            # 首个 INPUT 将房间从 STARTING 切换到 PLAYING
+            room_state = self.room_states.get(session.room_id)
+            if room_state is not None and room_state.get("status") == "STARTING":
+                room_state["status"] = "PLAYING"
+                print(f"[ROOM PLAYING] room={session.room_id}")
+
+            cmd = self.parse_input_payload(payload)
+
+            # ── seq 连续性校验 (P0-3) ──
+            if session.last_seq >= 0 and cmd.seq <= session.last_seq:
+                reject_reason = f"seq not increasing: {cmd.seq} <= {session.last_seq}"
+                print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
+                await self.maybe_broadcast_snapshot(
+                    session.room_id, websocket, reject_reason
                 )
-                session.pos_x = float(respawn_point["x"])
-                session.pos_y = float(respawn_point["y"])
+                return
+
+            # ── 拒绝客户端上传服务端权威字段 (P1-4) ──
+            forbidden_keys = {
+                "damagePercent",
+                "stocks",
+                "isDead",
+                "damage",
+                "hitResult",
+                "killCount",
+            }
+
+            payload_keys = set(payload.keys())
+            found_forbidden = payload_keys & forbidden_keys
+
+            if found_forbidden:
+                reject_reason = f"forbidden fields in INPUT: {sorted(found_forbidden)}"
+                print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
+                await self.maybe_broadcast_snapshot(
+                    session.room_id, websocket, reject_reason
+                )
+                return
+
+            session.last_seq = cmd.seq
+            reject_reason = ""
+
+            # ── 死亡等待期间 ──
+            if session.is_dead and getattr(session, "respawn_at_tick", -1) > 0:
                 session.vel_x = 0.0
                 session.vel_y = 0.0
-                session.damage_percent = 0.0
-                session.is_dead = False
-                session.respawn_at_tick = -1
-                session.accepted_grounded = True
-                session.accepted_jump_count = 0
-                session.accepted_drop = False
-                session.accepted_state = "Grounded"
-                session.last_knockback_x = 0.0
-                session.last_knockback_y = 0.0
-                session.last_hit_tick = -1
-                session.hitstun_until_tick = -1
-                self.combat.push_event(
-                    "PLAYER_RESPAWN",
-                    {
-                        "clientId": session.client_id,
-                        "x": session.pos_x,
-                        "y": session.pos_y,
-                    },
+                session.accepted_grounded = False
+                session.accepted_state = "Dead"
+
+                if self.tick >= session.respawn_at_tick and session.stocks > 0:
+                    respawn_point = RESPAWN_POINTS.get(
+                        session.client_id,
+                        {"x": 0.0, "y": 3.0},
+                    )
+
+                    session.pos_x = float(respawn_point["x"])
+                    session.pos_y = float(respawn_point["y"])
+                    session.vel_x = 0.0
+                    session.vel_y = 0.0
+                    session.damage_percent = 0.0
+                    session.is_dead = False
+                    session.respawn_at_tick = -1
+                    session.accepted_grounded = True
+                    session.accepted_jump_count = 0
+                    session.accepted_drop = False
+                    session.accepted_state = "Grounded"
+                    session.last_knockback_x = 0.0
+                    session.last_knockback_y = 0.0
+                    session.last_hit_tick = -1
+                    session.hitstun_until_tick = -1
+
+                    self.combat.push_event(
+                        "PLAYER_RESPAWN",
+                        {
+                            "clientId": session.client_id,
+                            "x": session.pos_x,
+                            "y": session.pos_y,
+                        },
+                    )
+
+                self.combat.step_projectiles(self.sessions, self.tick)
+                self.combat.step_melee_hitboxes(self.sessions, self.tick)
+                self.maybe_spawn_loot_for_room(session.room_id)
+                self.step_loots_for_room(session.room_id)
+                self.check_loot_pickups_for_room(session.room_id)
+                self.cleanup_dead_loots_for_room(session.room_id)
+
+                self.tick += 1
+
+                await self.maybe_broadcast_snapshot(
+                    session.room_id,
+                    websocket,
+                    reject_reason,
                 )
+                return
+
+            # ── 武器 / 瞄准方向 ──
+            session.aim_x = cmd.aim_x
+            session.aim_y = cmd.aim_y
+
+            if abs(cmd.aim_x) > 0.001:
+                session.facing = 1 if cmd.aim_x > 0 else -1
+            elif abs(cmd.move_x) > 0.001:
+                session.facing = 1 if cmd.move_x > 0 else -1
+
+            # ── 受击硬直 ──
+            in_hitstun = getattr(session, "hitstun_until_tick", -1) > self.tick
+
+            if in_hitstun:
+                session.accepted_state = "Hitstun"
+                session.accepted_grounded = False
+
+            # ── 水平移动 ──
+            if in_hitstun:
+                next_x = session.pos_x + session.vel_x * SIM_DT
+
+                if not self.hits_wall(next_x, session.pos_y):
+                    session.pos_x = next_x
+                else:
+                    session.vel_x = 0.0
+                    reject_reason = "击退撞墙阻挡"
+
+                session.vel_x *= KNOCKBACK_DRAG_X
+
+                if abs(session.vel_x) < 0.03:
+                    session.vel_x = 0.0
+            else:
+                session.vel_x = cmd.move_x * MOVE_SPEED
+                next_x = session.pos_x + session.vel_x * SIM_DT
+
+                if not self.hits_wall(next_x, session.pos_y):
+                    session.pos_x = next_x
+                else:
+                    session.vel_x = 0.0
+                    reject_reason = "撞墙阻挡"
+
+            # ── 着地检测 ──
+            standing_platform = self.get_standing_platform(session)
+
+            if standing_platform is not None and session.vel_y <= 0 and not in_hitstun:
+                session.accepted_grounded = True
+                session.pos_y = standing_platform.y
+                session.vel_y = 0.0
+
+                if session.accepted_state not in ("Dash", "BasicAttack", "Hitstun"):
+                    session.accepted_state = "Grounded"
+
+                session.accepted_jump_count = 0
+            else:
+                session.accepted_grounded = False
+
+                if session.accepted_state == "Grounded":
+                    session.accepted_state = cmd.client_state or "Airborne"
+
+            # ── 下穿 / 跳跃 ──
+            current_platform = self.get_standing_platform(session)
+
+            if not in_hitstun and cmd.drop_pressed and cmd.down_held:
+                if current_platform is not None and current_platform.kind == "oneway":
+                    session.accepted_drop = True
+                    session.accepted_grounded = False
+                    session.accepted_state = "Fall"
+                    session.vel_y = min(session.vel_y, -2.0)
+                    session.pos_y -= 0.15
+                else:
+                    reject_reason = "当前不在可下落的单向平台上"
+
+            elif not in_hitstun and cmd.jump_pressed:
+                if session.accepted_grounded:
+                    session.accepted_grounded = False
+                    session.accepted_jump_count = 1
+                    session.accepted_state = "Jump"
+                    session.vel_y = JUMP_VELOCITY
+                elif session.accepted_jump_count < MAX_JUMP_COUNT:
+                    session.accepted_jump_count += 1
+                    session.accepted_state = "Jump"
+                    session.vel_y = JUMP_VELOCITY
+                else:
+                    reject_reason = "超过最大跳跃次数"
+
+            # ── attack hold tracking ──
+            if in_hitstun:
+                session.attack_hold_ticks = 0
+            else:
+                if cmd.attack_released:
+                    session.attack_hold_ticks = 0
+                elif cmd.attack_held:
+                    session.attack_hold_ticks += 1
+                else:
+                    session.attack_hold_ticks = 0
+
+            # ── 攻击 ──
+            if not in_hitstun and self.should_execute_attack(session, cmd):
+                self.combat.execute_attack(
+                    attacker=session,
+                    aim_x=cmd.aim_x,
+                    aim_y=cmd.aim_y,
+                    tick=self.tick,
+                    sessions=self.sessions,
+                )
+
+            # ── 垂直运动 ──
+            self.step_vertical(session)
+
+            if in_hitstun and getattr(session, "hitstun_until_tick", -1) <= self.tick + 1:
+                if session.accepted_grounded:
+                    session.accepted_state = "Grounded"
+                else:
+                    session.accepted_state = "Fall"
+
+            # ── 投射物 / 近战 / 空投 ──
             self.combat.step_projectiles(self.sessions, self.tick)
             self.combat.step_melee_hitboxes(self.sessions, self.tick)
             self.maybe_spawn_loot_for_room(session.room_id)
             self.step_loots_for_room(session.room_id)
             self.check_loot_pickups_for_room(session.room_id)
             self.cleanup_dead_loots_for_room(session.room_id)
+
+            # ── 出界 / 命数 ──
+            if game_simulation.is_out_of_bounds(session.pos_x, session.pos_y):
+                if not session.is_dead:
+                    session.stocks -= 1
+
+                    self.combat.push_event(
+                        "PLAYER_OUT_OF_BOUNDS",
+                        {
+                            "clientId": session.client_id,
+                            "stocksLeft": session.stocks,
+                        },
+                    )
+
+                    if session.stocks <= 0:
+                        session.is_dead = True
+                        session.respawn_at_tick = -1
+                        session.accepted_state = "Dead"
+                        session.vel_x = 0.0
+                        session.vel_y = 0.0
+                    else:
+                        session.is_dead = True
+                        session.respawn_at_tick = self.tick + RESPAWN_DELAY_TICKS
+                        session.accepted_state = "Dead"
+                        session.accepted_grounded = False
+                        session.accepted_jump_count = 0
+                        session.accepted_drop = False
+                        session.vel_x = 0.0
+                        session.vel_y = 0.0
+                        session.last_knockback_x = 0.0
+                        session.last_knockback_y = 0.0
+                        session.last_hit_tick = -1
+                        session.hitstun_until_tick = -1
+
             self.tick += 1
-            await self.maybe_broadcast_snapshot(
-                session.room_id, websocket, reject_reason
-            )
-            return
 
-        # ── 武器 / 瞄准方向 ──
-        session.aim_x = cmd.aim_x
-        session.aim_y = cmd.aim_y
-        if abs(cmd.aim_x) > 0.001:
-            session.facing = 1 if cmd.aim_x > 0 else -1
-        elif abs(cmd.move_x) > 0.001:
-            session.facing = 1 if cmd.move_x > 0 else -1
-
-        # ── 受击硬直 ──
-        in_hitstun = getattr(session, "hitstun_until_tick", -1) > self.tick
-        if in_hitstun:
-            session.accepted_state = "Hitstun"
-            session.accepted_grounded = False
-
-        # ── 水平移动 ──
-        if in_hitstun:
-            next_x = session.pos_x + session.vel_x * SIM_DT
-            if not self.hits_wall(next_x, session.pos_y):
-                session.pos_x = next_x
-            else:
-                session.vel_x = 0.0
-                reject_reason = "击退撞墙阻挡"
-            session.vel_x *= KNOCKBACK_DRAG_X
-            if abs(session.vel_x) < 0.03:
-                session.vel_x = 0.0
-        else:
-            session.vel_x = cmd.move_x * MOVE_SPEED
-            next_x = session.pos_x + session.vel_x * SIM_DT
-            if not self.hits_wall(next_x, session.pos_y):
-                session.pos_x = next_x
-            else:
-                session.vel_x = 0.0
-                reject_reason = "撞墙阻挡"
-
-        # ── 着地检测 ──
-        standing_platform = self.get_standing_platform(session)
-        if standing_platform is not None and session.vel_y <= 0 and not in_hitstun:
-            session.accepted_grounded = True
-            session.pos_y = standing_platform.y
-            session.vel_y = 0.0
-            if session.accepted_state not in ("Dash", "BasicAttack", "Hitstun"):
-                session.accepted_state = "Grounded"
-            session.accepted_jump_count = 0
-        else:
-            session.accepted_grounded = False
-            if session.accepted_state == "Grounded":
-                session.accepted_state = cmd.client_state or "Airborne"
-
-        # ── 下穿 / 跳跃 ──
-        current_platform = self.get_standing_platform(session)
-        if not in_hitstun and cmd.drop_pressed and cmd.down_held:
-            if current_platform is not None and current_platform.kind == "oneway":
-                session.accepted_drop = True
-                session.accepted_grounded = False
-                session.accepted_state = "Fall"
-                session.vel_y = min(session.vel_y, -2.0)
-                session.pos_y -= 0.15
-            else:
-                reject_reason = "当前不在可下落的单向平台上"
-        elif not in_hitstun and cmd.jump_pressed:
-            if session.accepted_grounded:
-                session.accepted_grounded = False
-                session.accepted_jump_count = 1
-                session.accepted_state = "Jump"
-                session.vel_y = JUMP_VELOCITY
-            elif session.accepted_jump_count < MAX_JUMP_COUNT:
-                session.accepted_jump_count += 1
-                session.accepted_state = "Jump"
-                session.vel_y = JUMP_VELOCITY
-            else:
-                reject_reason = "超过最大跳跃次数"
-
-        # ── attack hold tracking ──
-        if in_hitstun:
-            session.attack_hold_ticks = 0
-        else:
-            if cmd.attack_released:
-                # 攻击键被释放，重置蓄力/连发状态
-                session.attack_hold_ticks = 0
-            elif cmd.attack_held:
-                session.attack_hold_ticks += 1
-            else:
-                session.attack_hold_ticks = 0
-
-        # ── 攻击 ──
-        if not in_hitstun and self.should_execute_attack(session, cmd):
-            self.combat.execute_attack(
-                attacker=session,
-                aim_x=cmd.aim_x,
-                aim_y=cmd.aim_y,
-                tick=self.tick,
-                sessions=self.sessions,
-            )
-
-        # ── 垂直运动 ──
-        self.step_vertical(session)
-        if in_hitstun and getattr(session, "hitstun_until_tick", -1) <= self.tick + 1:
-            if session.accepted_grounded:
-                session.accepted_state = "Grounded"
-            else:
-                session.accepted_state = "Fall"
-
-        # ── 投射物 / 近战 / 空投 ──
-        self.combat.step_projectiles(self.sessions, self.tick)
-        self.combat.step_melee_hitboxes(self.sessions, self.tick)
-        self.maybe_spawn_loot_for_room(session.room_id)
-        self.step_loots_for_room(session.room_id)
-        self.check_loot_pickups_for_room(session.room_id)
-        self.cleanup_dead_loots_for_room(session.room_id)
-
-        # ── 出界 / 命数 ──
-        if game_simulation.is_out_of_bounds(session.pos_x, session.pos_y):
-            if not session.is_dead:
-                session.stocks -= 1
-                self.combat.push_event(
-                    "PLAYER_OUT_OF_BOUNDS",
-                    {
-                        "clientId": session.client_id,
-                        "stocksLeft": session.stocks,
-                    },
+            if self.tick % 20 == 0:
+                print(
+                    f"[PERF] tick={self.tick} "
+                    f"projectiles={len(self.combat.projectiles)} "
+                    f"events={len(self.combat.pending_events)} "
+                    f"sessions={len(self.sessions)}"
                 )
-                if session.stocks <= 0:
-                    session.is_dead = True
-                    session.respawn_at_tick = -1
-                    session.accepted_state = "Dead"
-                    session.vel_x = 0.0
-                    session.vel_y = 0.0
-                else:
-                    session.is_dead = True
-                    session.respawn_at_tick = self.tick + RESPAWN_DELAY_TICKS
-                    session.accepted_state = "Dead"
-                    session.accepted_grounded = False
-                    session.accepted_jump_count = 0
-                    session.accepted_drop = False
-                    session.vel_x = 0.0
-                    session.vel_y = 0.0
-                    session.last_knockback_x = 0.0
-                    session.last_knockback_y = 0.0
-                    session.last_hit_tick = -1
-                    session.hitstun_until_tick = -1
 
-        self.tick += 1
-        if self.tick % 20 == 0:
-            print(
-                f"[PERF] tick={self.tick} projectiles={len(self.combat.projectiles)} "
-                f"events={len(self.combat.pending_events)} sessions={len(self.sessions)}"
-            )
-
-        await self.check_game_over(session.room_id)
-        await self.maybe_broadcast_snapshot(session.room_id, websocket, reject_reason)
-
+            await self.check_game_over(session.room_id)
+            await self.maybe_broadcast_snapshot(session.room_id, websocket, reject_reason)
     # ═══════════════════════════════════════════════════════════════
     # SNAPSHOT (阶段五第4步)
     # ═══════════════════════════════════════════════════════════════
