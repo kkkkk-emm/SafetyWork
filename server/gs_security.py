@@ -1,3 +1,20 @@
+"""GS 安全服务模块。
+
+职责：
+1. Service Ticket 解密与校验（K_GS 长期密钥解密，校验 ticketType/clientId/service/exp/login_gen）
+2. Authenticator 解密与校验（KcGs 会话密钥解密，校验时间窗口 + nonce 防重放）
+3. 会话内 payload/auth 解密与校验（KcGs + 时间窗口 + nonce 防重放）
+4. 用户账户状态校验（login_gen 匹配、status 启禁用）
+5. 安全事件记录（成功/失败均写入 security_event_log）
+
+Kerberos 安全模型：
+- K_GS：TGS 与 GS 共享的长期 DES 密钥，用于加密 ServiceTicket（客户端不可读）
+- KcGs：TGS 为客户端生成的会话密钥，嵌入在 ServiceTicket 中，用于客户端↔GS 通信
+- Authenticator：客户端用 KcGs 加密的时间戳+nonce，证明持有 KcGs
+- ReplayGuard：基于 nonce 的防重放缓存，同一 (userId, clientId, nonce) 只能用一次
+- 时间窗口：默认 30 秒，防止时钟偏差过大的旧请求被重放
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,10 +31,12 @@ from gs_errors import GsRequestError
 from gs_protocol import ProtocolError, require_int_field, require_string_field
 
 
+# 允许客户端时钟比服务器快 1 秒，避免 NTP 小偏差导致拒绝合法请求
 MAX_FUTURE_TIMESTAMP_SKEW_MS = 1000
 
 
 def timestamp_in_window(timestamp: int, current_ms: int, window_ms: int) -> bool:
+    """时间戳必须在 [current_ms - window_ms, current_ms + 1s] 范围内。"""
     return (
         current_ms - window_ms <= timestamp <= current_ms + MAX_FUTURE_TIMESTAMP_SKEW_MS
     )
@@ -25,28 +44,40 @@ def timestamp_in_window(timestamp: int, current_ms: int, window_ms: int) -> bool
 
 @dataclass(frozen=True)
 class ServiceTicket:
+    """TGS 签发的 Service Ticket 解析结果。
+
+    K_GS 解密后提取的字段，frozen=True 保证不可篡改。
+    kc_gs 仅在 GS_AUTH 时提取（require_kc=True），重连时不提取（已从 session 获取）。
+    """
     user_id: int
     username: str
     client_id: str
-    login_gen: int
-    exp: int
-    kc_gs: Optional[bytes] = None
+    login_gen: int       # 用户登录代数，与 user_account.login_gen 比对，防止密码修改后旧票据仍可用
+    exp: int             # 票据过期时间 (毫秒时间戳)
+    kc_gs: Optional[bytes] = None  # 会话密钥，GS_AUTH 时提取，重连时从旧 session 获取
 
 
 @dataclass(frozen=True)
 class SecurityEventContext:
-    event_type: str
-    client_id: str
-    remote_addr: Optional[str]
+    """安全事件上下文，统一传递给 record_success/record_failure。"""
+    event_type: str          # 事件类型: GS_AUTH_FAIL / RECONNECT_FAIL / TICKET_EXPIRED 等
+    client_id: str           # 客户端标识
+    remote_addr: Optional[str]  # 客户端 IP:port
     user_id: Optional[int] = None
     username: Optional[str] = None
 
 
 class ReplayGuard:
+    """防重放缓存。
+
+    原理：每对 (userId, clientId, nonce) 只能使用一次，过期自动清理。
+    非线程安全——所有 WebSocket 回调运行在同一个 asyncio 事件循环中。
+    """
     def __init__(self, cache: Optional[Dict[str, int]] = None) -> None:
         self.cache: Dict[str, int] = cache if cache is not None else {}
 
     def prune(self, current_ms: int) -> None:
+        """清理已过期的 nonce 记录，防止缓存无限增长。"""
         expired = [
             key for key, expires_at in self.cache.items() if expires_at <= current_ms
         ]
@@ -62,15 +93,24 @@ class ReplayGuard:
         current_ms: int,
         window_ms: int,
     ) -> bool:
+        """检查 nonce 是否已使用，未使用则存入缓存。
+
+        返回 True 表示首次使用，False 表示重放攻击。
+        """
         self.prune(current_ms)
         replay_key = f"{user_id}/{client_id}/{nonce}"
         if self.cache.get(replay_key, 0) > current_ms:
-            return False
+            return False  # nonce 已存在且未过期 → 重放攻击
+        # 记录过期时间 = 当前时间 + 窗口，窗口过后自动过期
         self.cache[replay_key] = current_ms + window_ms
         return True
 
 
 class GsSecurityService:
+    """GS 安全服务——封装票据校验、认证校验、防重放、安全事件记录。
+
+    所有需要 DB 连接的方法接收 conn 参数，由调用方管理事务边界。
+    """
     def __init__(self, dao: Any, config: Any, replay_guard: ReplayGuard) -> None:
         self.dao = dao
         self.config = config
@@ -78,6 +118,7 @@ class GsSecurityService:
 
     @property
     def window_ms(self) -> int:
+        """时间窗口转为毫秒，用于 timestamp_in_window。"""
         return int(self.config.authenticator_window_seconds) * 1000
 
     def validate_service_ticket(
@@ -89,9 +130,18 @@ class GsSecurityService:
         client_id: str,
         current_ms: int,
         context: SecurityEventContext,
-        require_service: bool,
-        require_kc: bool,
+        require_service: bool,  # GS_AUTH 时需要校验 service 名，重连时不需要（已从 session 获取）
+        require_kc: bool,       # GS_AUTH 时需要提取 KcGs，重连时不需要
     ) -> ServiceTicket:
+        """用 K_GS 解密 Service Ticket 并做多层校验。
+
+        校验链：
+        1. DES 解密 → 提取 ticketType / clientId / userId / username / loginGen / exp / kcGs
+        2. require_service=True 时校验 service 名与 GS 配置一致（防止票据跨服务滥用）
+        3. require_kc=True 时提取 KcGs 并校验长度
+        4. 校验票据过期时间
+        5. 查询 user_account 校验 login_gen 和 status（防止密码修改后旧票据仍可用）
+        """
         try:
             raw_ticket = des_decrypt_object(k_gs, encrypted_ticket)
         except CryptoError as exc:
@@ -106,9 +156,9 @@ class GsSecurityService:
                 and require_string_field(raw_ticket, "service")
                 != self.config.gs_service_name
             ):
-                raise GsRequestError("INVALID_TICKET")
+                raise GsRequestError("INVALID_TICKET")  # 票据是给其他 GS 的，拒绝
             if require_string_field(raw_ticket, "clientId") != client_id:
-                raise GsRequestError("INVALID_TICKET")
+                raise GsRequestError("INVALID_TICKET") # 客户端 ID 不匹配
 
             user_id = read_int(raw_ticket, "userId")
             username = require_string_field(raw_ticket, "username")
@@ -116,7 +166,7 @@ class GsSecurityService:
             exp = read_int(raw_ticket, "exp")
             if user_id <= 0 or login_gen < 0 or exp <= 0:
                 raise GsRequestError("INVALID_TICKET")
-
+            
             kc_gs = None
             if require_kc:
                 kc_gs = b64decode(require_string_field(raw_ticket, "kcGs"))
@@ -150,6 +200,11 @@ class GsSecurityService:
         username: Optional[str],
         client_id: str,
     ) -> Dict[str, Any]:
+        """解密客户端的 Authenticator（KcGs 加密的 ts + nonce）。
+
+        用途：GS_AUTH 和 RECONNECT_REQ 时证明客户端持有正确的 KcGs。
+        解密后进行时间窗口 + nonce 防重放双重校验。
+        """
         try:
             auth = des_decrypt_object(kc_gs, encrypted_auth)
         except CryptoError as exc:
@@ -183,6 +238,12 @@ class GsSecurityService:
         user_id: int,
         username: Optional[str],
     ) -> Dict[str, Any]:
+        """解密客户端 payload（仅做 DES 解密，不做 ts/nonce 校验）。
+
+        与 decrypt_client_authenticator 的区别：
+        - Authenticator 必须校验 ts+nonce（防重放的防线）
+        - Payload 的 ts+nonce 校验在 decrypt_session_object 中完成
+        """
         try:
             return des_decrypt_object(kc_gs, encrypted_payload)
         except CryptoError as exc:
@@ -209,8 +270,17 @@ class GsSecurityService:
         self,
         session: Any,
         data: Dict[str, Any],
-        field: str,
+        field: str,  # "auth" 或 "payload"
     ) -> Dict[str, Any]:
+        """解密会话中已认证的消息字段（auth 或 payload）。
+
+        在业务消息中（CREATE_ROOM / JOIN_ROOM / READY / START / INPUT / HEARTBEAT）调用。
+        校验链：
+        1. 从 session 获取 KcGs
+        2. DES 解密
+        3. 时间窗口校验（ts 必须在期限内）
+        4. nonce 防重放校验（同一 nonce 不可复用）
+        """
         kc_gs = getattr(session, "kc_gs", None)
         if kc_gs is None:
             raise GsRequestError("KEY_NOT_CONFIGURED")
@@ -247,6 +317,10 @@ class GsSecurityService:
         username: Optional[str],
         client_id: str,
     ) -> None:
+        """校验 Authenticator 的 ts 时间窗口 + nonce 防重放。
+
+        这是 GS_AUTH / RECONNECT_REQ 的安全入口——在还没建立 session 时也必须防重放。
+        """
         timestamp = require_int_field(payload, "ts")
         nonce = require_string_field(payload, "nonce")
         if not timestamp_in_window(timestamp, current_ms, self.window_ms):
@@ -325,6 +399,7 @@ class GsSecurityService:
         ticket: ServiceTicket,
         current_ms: int,
     ) -> None:
+        """校验 Service Ticket 是否过期。"""
         if current_ms <= ticket.exp:
             return
         self.record_failure(
@@ -343,6 +418,13 @@ class GsSecurityService:
         context: SecurityEventContext,
         ticket: ServiceTicket,
     ) -> None:
+        """校验用户账户状态。
+
+        三重校验：
+        1. user_id 是否存在于 user_account 表
+        2. status 是否为 1（启用），0 表示被管理员禁用
+        3. login_gen 是否匹配——每次修改密码 login_gen+1，旧票据自动失效；同时校验 username 防止同 ID 换名攻击
+        """
         user = self.dao.find_user_by_id(conn, ticket.user_id)
         if user is None:
             self.record_failure(
@@ -365,6 +447,7 @@ class GsSecurityService:
             )
             raise GsRequestError("ACCOUNT_DISABLED")
 
+        # login_gen 不匹配 → 密码已修改 / 被踢下线 → 旧票据作废
         if int(user["login_gen"]) != ticket.login_gen or username != ticket.username:
             self.record_failure(
                 conn,
@@ -378,9 +461,10 @@ class GsSecurityService:
 
 
 def read_int(obj: Dict[str, Any], field: str) -> int:
+    """从 JSON 字典中安全读取整数。bool 类型不会隐式转为 int（防止 True→1 的陷阱）。"""
     value = obj.get(field)
     if isinstance(value, bool):
-        raise ValueError(field)
+        raise ValueError(field)  # 拒绝 bool，因为 Python 中 bool 是 int 的子类
     if isinstance(value, int):
         return value
     if isinstance(value, str) and value.strip() != "":

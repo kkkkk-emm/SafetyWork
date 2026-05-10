@@ -38,44 +38,37 @@ MAX_PROJECTILES = 50
 MAX_JUMP_COUNT = 2
 MOVEMENT_MULTIPLIER = 0.5
 
-# -----------------------------
-# Simplified map / collision
-# -----------------------------
-GROUND_EPSILON = 0.001
-PLAYER_HALF_WIDTH = 0.46
-PLAYER_HALF_HEIGHT = 0.42
+# ── 地图物理参数 ──
+GROUND_EPSILON = 0.001     # 着地判定容差
+PLAYER_HALF_WIDTH = 0.46   # 玩家碰撞半宽
+PLAYER_HALF_HEIGHT = 0.42  # 玩家碰撞半高
 
-# -----------------------------
-# Unified movement parameters
-# -----------------------------
-SIM_DT = 1.0 / 30.0
-MOVE_SPEED = 32.0 * MOVEMENT_MULTIPLIER
+# ── 运动参数（统一走 MOVEMENT_MULTIPLIER 缩放，方便整体调手感）──
+SIM_DT = 1.0 / 30.0        # 模拟步长 = 30FPS
+MOVE_SPEED = 32.0 * MOVEMENT_MULTIPLIER  # 水平移速
 
-GRAVITY = -2.0 * MOVEMENT_MULTIPLIER
-JUMP_VELOCITY = 30.0 * MOVEMENT_MULTIPLIER
-FALL_SPEED_CAP = -36.0 * MOVEMENT_MULTIPLIER
+GRAVITY = -2.0 * MOVEMENT_MULTIPLIER     # 重力加速度（每帧累加到 vel_y）
+JUMP_VELOCITY = 30.0 * MOVEMENT_MULTIPLIER  # 起跳初速度
+FALL_SPEED_CAP = -36.0 * MOVEMENT_MULTIPLIER  # 最大下落速度（终端速度）
 
 OFFSET_Y = 0.7
-GROUND_Y = -1.45 + OFFSET_Y
+GROUND_Y = -1.45 + OFFSET_Y  # 地面 y 坐标
 
-
+# ── 重生 ──
 RESPAWN_DELAY_SECONDS = 2.0
-RESPAWN_DELAY_TICKS = int(RESPAWN_DELAY_SECONDS / SIM_DT)
-# -----------------------------
-# Smash-like combat defaults
-# -----------------------------
-KNOCKBACK_SCALE = 0.55
-HITSTUN_BASE_TICKS = 12
-HITSTUN_PERCENT_FACTOR_TO_TICKS = 0.12
-KNOCKBACK_DRAG_X = 0.86
+RESPAWN_DELAY_TICKS = int(RESPAWN_DELAY_SECONDS / SIM_DT)  # 死亡后等待重生 tick 数
 
-DEFAULT_WEIGHT = 25.0
-DEFAULT_KNOCKBACK_GROWTH = 0.2
-DEFAULT_BASE_KNOCKBACK = 25.0
+# ── 大乱斗战斗参数 ──
+KNOCKBACK_SCALE = 0.55              # 全局击退缩放（数值越大击飞越远）
+HITSTUN_BASE_TICKS = 12             # 基础受击硬直 tick 数
+HITSTUN_PERCENT_FACTOR_TO_TICKS = 0.12  # 百分比→硬直 tick 转换系数
+KNOCKBACK_DRAG_X = 0.86             # 击退水平阻力（每帧 vel_x *= DRAG，模拟空气阻力）
 
-# -----------------------------
-# Blast zone
-# -----------------------------
+DEFAULT_WEIGHT = 25.0               # 默认体重（越大受击飞越近）
+DEFAULT_KNOCKBACK_GROWTH = 0.2      # 默认击飞增长率（越大高百分比时击飞越远）
+DEFAULT_BASE_KNOCKBACK = 25.0       # 默认基础击退力
+
+# ── 出界判定区域（离开此区域 → 扣命）──
 BLAST_X_MIN = -12.0
 BLAST_X_MAX = 32.0
 BLAST_Y_MIN = -6.0

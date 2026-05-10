@@ -1,3 +1,16 @@
+"""GS 快照广播 Mixin + 游戏结束检测。
+
+快照（SNAPSHOT）是服务端权威状态的同步载体，包含：
+- players[]: 所有玩家权威状态（位置/速度/伤害/命数/硬直）
+- projectiles[]: 飞行中的投射物
+- loots[]: 场上的空投物
+- events[]: 本帧发生的游戏事件
+
+广播策略：默认每 2 tick 广播一次（SNAPSHOT_THROTTLE_ENABLED），
+可配置每次有事件时强制广播（SNAPSHOT_FORCE_BROADCAST_ON_EVENTS）。
+每个客户端用各自的 KcGs 加密 payload——并行发送（asyncio.gather）。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,8 +32,13 @@ class SnapshotBroadcastMixin:
         self: RelayServerContext,
         room_id: str,
         websocket: Any,
-        reject_reason: str = "",
+        reject_reason: str = "",  # 非空时表示本帧拒绝了当前 websocket 的输入（seq 乱序/禁止字段等）
     ) -> None:
+        """按节流策略决定是否广播快照。
+
+        节流逻辑：SNAPSHOT_THROTTLE_ENABLED=True 时每 N tick 广播一次，
+        但有事件时（SNAPSHOT_FORCE_BROADCAST_ON_EVENTS=True）强制立即广播。
+        """
         if not room_id:
             return
         should_broadcast = True
@@ -150,8 +168,9 @@ class SnapshotBroadcastMixin:
     async def broadcast_snapshot(
         self: RelayServerContext,
         room_id: str,
-        reject_reason_by_socket: Optional[Dict[Any, str]] = None,
+        reject_reason_by_socket: Optional[Dict[Any, str]] = None,  # 按 websocket 指定 reject reason
     ) -> None:
+        """并行广播快照给房间内所有在线玩家，使用 asyncio.gather 并发发送。"""
         peers = list(self.rooms.get(room_id, set()))
         tasks = []
         for peer in peers:
@@ -180,7 +199,11 @@ class SnapshotBroadcastMixin:
     # ═══════════════════════════════════════════════════════════════
 
     async def check_game_over(self: RelayServerContext, room_id: str) -> None:
-        """检测是否仅剩 ≤1 名存活玩家，若是则广播 RESULT。"""
+        """检测游戏是否结束——存活玩家数 ≤ 1 时触发结算。
+
+        同时统计在线玩家和重连宽限期内的离线玩家（断线玩家也应出现在结算中）。
+        游戏结束：状态 PLAYING→FINISHED，广播 RESULT，清理投射物/空投。
+        """
         if not room_id:
             return
         room_state = self.room_states.get(room_id)
@@ -189,7 +212,7 @@ class SnapshotBroadcastMixin:
         if room_state.get("status") != "PLAYING":
             return
         if room_state.get("gameOver"):
-            return
+            return  # 已结束，避免重复广播 RESULT
 
         # 统计存活玩家 (stocks > 0)
         alive_players: list[ClientSession] = []

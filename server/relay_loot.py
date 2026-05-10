@@ -1,3 +1,9 @@
+"""GS 空投管理 Mixin——生成 / 物理下落 / 拾取 / 清理。
+
+空投在固定间隔（LOOT_SPAWN_INTERVAL_TICKS）从上方随机位置生成，
+受 LOOT_GRAVITY 重力下落至平台表面停止，玩家靠近即可拾取。
+"""
+
 from __future__ import annotations
 
 import random
@@ -28,11 +34,16 @@ _GAME_RANDOM = random.SystemRandom()
 
 class LootManagerMixin:
     def get_room_loots(self: RelayServerContext, room_id: str) -> dict[str, ServerLoot]:
+        """获取房间空投字典，不存在时懒初始化。"""
         if room_id not in self.room_loots:
             self.room_loots[room_id] = {}
         return self.room_loots[room_id]
 
     def choose_random_loot_x(self: RelayServerContext) -> float:
+        """在所有平台的 x 范围内加权随机选择一个 x 坐标。
+
+        权重 = 平台宽度（越宽的平台上空投出现概率越高）。
+        """
         candidates = []
         for platform in game_simulation.MAP_PLATFORMS:
             left = float(platform.x_min) + LOOT_DROP_PLATFORM_MARGIN
@@ -70,6 +81,11 @@ class LootManagerMixin:
         return candidates[0]
 
     def maybe_spawn_loot_for_room(self: RelayServerContext, room_id: str) -> None:
+        """在间隔 tick 到达且场上空投数未达到上限时，随机生成一个空投。
+
+        空投类型按 LOOT_TYPE_WEIGHTS 权重随机：effect（效果道具）或 weapon（武器）。
+        空投从 LOOT_SPAWN_Y 高度生成，将在后续 step 中受重力下落。
+        """
         if not room_id:
             return
         next_tick = self.room_next_loot_tick.get(room_id, 0)

@@ -1,3 +1,16 @@
+"""GS 武器效果系统——攻击执行效果 + 投射物生命周期钩子。
+
+效果生命周期钩子：
+1. on_attack_execute: 攻击执行时（parry 反弹 / sword_wave 剑气）
+2. on_projectile_spawned: 投射物生成时（hover_split 记录初始速度）
+3. before_move: 每帧移动前（hover_split 线性减速）
+4. after_move: 每帧移动后（delayed_explosion 定时爆炸 / hover_split 分裂）
+5. on_world_hit: 撞世界时（delayed_explosion 撞墙爆炸）
+6. on_player_hit: 撞玩家时（delayed_explosion 命中爆炸）
+
+返回值约定：True = effect 已接管处理（外层不再执行默认逻辑），False = 外层继续。
+"""
+
 from math import cos, radians, sin, atan2
 from typing import Any, Dict, List
 
@@ -90,6 +103,7 @@ def apply_effects_on_attack_execute(
     effect_ids: List[str],
     tick: int,
 ) -> None:
+    """攻击执行时触发效果——当前支持 parry（反弹投射物）和 sword_wave（发射剑气）。"""
     effect_ids = normalize_effect_list(effect_ids)
 
     for effect_id in effect_ids:
@@ -407,8 +421,13 @@ def trigger_delayed_explosion(
     proj: ServerProjectile,
     cfg: EffectConfig,
     tick: int,
-    reason: str = "",
+    reason: str = "",  # "timer"（定时） / "world"（撞墙） / "player"（命中玩家）
 ) -> None:
+    """触发延迟爆炸——在爆炸半径内找到所有敌方玩家并 apply_hit。
+
+    爆炸伤害 = 投射物伤害 * damage_multiplier。
+    可由定时器、撞墙或命中玩家触发。
+    """
     radius = _cfg_float(cfg, "explosion_radius")
     damage_mul = _cfg_float(cfg, "damage_multiplier")
 
@@ -472,6 +491,10 @@ def trigger_delayed_explosion(
 def trigger_hover_split(
     combat_runtime, proj: ServerProjectile, cfg: EffectConfig
 ) -> None:
+    """触发悬停分裂——在子弹当前位置以原始速度向四周均匀分裂出 split_count 个子弹。
+
+    子子弹继承父子弹的武器/伤害/击退属性，不继承 hover_split 自身（防止无限递归）。
+    """
     split_count = _cfg_int(cfg, "split_count")
 
     if split_count <= 0:

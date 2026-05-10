@@ -1,3 +1,12 @@
+"""GS 统一错误处理 Mixin。
+
+所有业务 handler 的异常在此统一捕获，转换为 ERROR 报文回复客户端：
+- ProtocolError → 协议层错误（字段缺失/类型错误）→ JSON 层直接返回对应 errorCode
+- GsRequestError → 业务错误（认证失败/房间满等）→ 返回对应错误码
+- CryptoError → 密码学错误（解密失败/B64 无效）→ 返回错误信息
+- 未预期 Exception → 打印堆栈，返回 INTERNAL_ERROR（不泄露内部细节给客户端）
+"""
+
 from __future__ import annotations
 
 import sys
@@ -16,6 +25,7 @@ class GsErrorHandlingMixin:
         label: str,
         action: Awaitable[Any],
     ) -> bool:
+        """执行 handler，捕获所有异常并转为 ERROR 报文。"""
         try:
             await action
             return True
