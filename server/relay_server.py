@@ -97,8 +97,15 @@ class RelayServer(
         self.room_states: Dict[str, Dict[str, Any]] = {}
 
         # ── 对战 ──
+        # 兼容旧字段：不要再把它们作为正式对战运行态使用。
+        # 正式逻辑使用 room_ticks / room_combats，按 roomId 隔离。
         self.tick: int = 0
         self.combat = CombatRuntime()
+
+        # 每个房间独立一套 tick 和 CombatRuntime，避免多房间同时战斗互相串状态。
+        self.room_ticks: Dict[str, int] = {}
+        self.room_combats: Dict[str, CombatRuntime] = {}
+
         self.room_loots: Dict[str, Dict[str, ServerLoot]] = {}
         self.room_next_loot_tick: Dict[str, int] = {}
         self.next_loot_id = 1
@@ -135,7 +142,6 @@ class RelayServer(
                 pass
 
     async def maintenance_loop(self) -> None:
-        # 定期清理防重放缓存
         while True:
             await asyncio.sleep(5)
             self.prune_replay_cache(now_ms())
@@ -316,7 +322,6 @@ class RelayServer(
             auth_nonce = require_string_field(auth, "nonce")
             self._expire_reconnect_grace(current_ms)
 
-            # 认证通过后，创建服务端会话并把关键身份信息挂到 session 上。
             session_id = f"sess-{ticket.user_id}-{generate_nonce()[:8]}"
             session = self.sessions.get(websocket)
             if session is None:
@@ -717,6 +722,97 @@ class RelayServer(
         except (TypeError, ValueError):
             return default
 
+    def get_room_tick(self, room_id: str) -> int:
+        if not room_id:
+            return 0
+        return int(self.room_ticks.get(room_id, 0))
+
+    def set_room_tick(self, room_id: str, tick: int) -> None:
+        if not room_id:
+            return
+        self.room_ticks[room_id] = int(tick)
+
+    def advance_room_tick(self, room_id: str) -> int:
+        tick = self.get_room_tick(room_id) + 1
+        self.set_room_tick(room_id, tick)
+        return tick
+
+    def get_room_combat(self, room_id: str) -> CombatRuntime:
+        combat = self.room_combats.get(room_id)
+        if combat is None:
+            combat = CombatRuntime()
+            self.room_combats[room_id] = combat
+        return combat
+
+    def get_room_sessions(self, room_id: str) -> Dict[Any, ClientSession]:
+        result: Dict[Any, ClientSession] = {}
+        if not room_id:
+            return result
+
+        for ws in list(self.rooms.get(room_id, set())):
+            session = self.sessions.get(ws)
+            if session is None:
+                continue
+            if session.room_id != room_id:
+                continue
+            if session.client_id is None:
+                continue
+            result[ws] = session
+
+        return result
+
+    def reset_room_runtime_state(self, room_id: str) -> None:
+        if not room_id:
+            return
+
+        self.room_ticks[room_id] = 0
+        self.room_combats[room_id] = CombatRuntime()
+        self.room_loots.pop(room_id, None)
+        self.room_next_loot_tick.pop(room_id, None)
+
+        for session in self.get_room_sessions(room_id).values():
+            session.last_seq = -1
+
+            session.is_dead = False
+            session.respawn_at_tick = -1
+            session.damage_percent = 0.0
+            session.stocks = 3
+
+            respawn_point = RESPAWN_POINTS.get(
+                session.client_id or "", {"x": 0.0, "y": 3.0}
+            )
+            session.pos_x = float(respawn_point.get("x", 0.0))
+            session.pos_y = float(respawn_point.get("y", 3.0))
+
+            session.vel_x = 0.0
+            session.vel_y = 0.0
+            session.accepted_grounded = True
+            session.accepted_jump_count = 0
+            session.accepted_drop = False
+            session.accepted_state = "Grounded"
+
+            session.last_attack_tick = -999999
+            session.last_attack_weapon_id = ""
+            session.attack_hold_ticks = 0
+
+            session.last_knockback_x = 0.0
+            session.last_knockback_y = 0.0
+            session.last_hit_tick = -1
+            session.hitstun_until_tick = -1
+
+        print(f"[ROOM RUNTIME RESET] room={room_id} tick=0")
+
+    def cleanup_room_runtime_state(self, room_id: str) -> None:
+        if not room_id:
+            return
+
+        self.room_ticks.pop(room_id, None)
+        self.room_combats.pop(room_id, None)
+        self.room_loots.pop(room_id, None)
+        self.room_next_loot_tick.pop(room_id, None)
+
+        print(f"[ROOM RUNTIME CLEANUP] room={room_id}")
+
     def parse_input_payload(self, cmd: dict) -> InputPayload:
         """处理 RelayServer.parse_input_payload 相关的 GS 中继服务流程。"""
         effect_ids_raw = cmd.get("equippedEffectIds", [])
@@ -749,21 +845,21 @@ class RelayServer(
             equipped_effect_ids=effect_ids,
         )
 
-    def should_execute_attack(self, session: ClientSession, cmd: InputPayload) -> bool:
-        """处理 RelayServer.should_execute_attack 相关的 GS 中继服务流程。"""
+    def should_execute_attack(
+        self,
+        session: ClientSession,
+        cmd: InputPayload,
+        tick: int,
+    ) -> bool:
         if session is None or session.client_id is None or session.is_dead:
             return False
 
-        # 先根据当前会话所持武器，取出武器配置。
-        # 这里的配置决定了这把武器是手动开火、自动连发，还是需要特殊冷却节奏。
         weapon_id = session.equipped_weapon_id
         weapon_cfg = WEAPON_DB.get(weapon_id)
         if weapon_cfg is None:
             # 如果武器表里找不到当前武器，就退回到默认武器配置，避免配置缺失导致逻辑中断。
             weapon_cfg = WEAPON_DB.get("手枪", {})
 
-        # attack_mode 用来区分武器的攻击模型：近战、远程、自动连发等。
-        # auto_fire 则决定 attack_held 是否可以持续触发攻击。
         attack_mode = weapon_cfg.get("attack_mode", "ranged")
         auto_fire = bool(weapon_cfg.get("auto_fire", attack_mode == "ranged"))
 
@@ -773,43 +869,40 @@ class RelayServer(
             weapon_cfg.get("fire_interval_ticks", 10), 10
         )
 
-        # 先判断“玩家是否真的想攻击”。
-        # 按下攻击键一定算攻击意图；如果是自动武器，则长按攻击键也算。
-        wants_attack = (cmd.attack_pressed) or (cmd.attack_held and auto_fire)
+        wants_attack = False
+        if cmd.attack_pressed:
+            wants_attack = True
+        elif cmd.attack_held and auto_fire:
+            wants_attack = True
 
-        # 没有攻击意图，就直接返回 False。
-        # 这样可以把“没按攻击”与“按了但被冷却挡住”区分开。
         if not wants_attack:
             return False
 
-        # 切换武器时要重置攻击冷却计时。
-        # 否则新武器会继承旧武器的 last_attack_tick，出现“刚换武器却还在冷却”的问题。
         if session.last_attack_weapon_id != weapon_id:
             session.last_attack_weapon_id = weapon_id
             session.last_attack_tick = -999999
 
-        # elapsed 表示距离上一次成功攻击已经过去了多少 tick。
-        # 只要还没到最小间隔，就不允许再次攻击。
-        elapsed = self.tick - session.last_attack_tick
+        elapsed = tick - session.last_attack_tick
         if elapsed < fire_interval_ticks:
             return False
 
-        # 通过所有条件后，记录这次攻击发生的 tick，供下一次冷却判定使用。
-        session.last_attack_tick = self.tick
+        session.last_attack_tick = tick
         return True
 
     async def handle_input(self, websocket: Any, data: Dict[str, Any]) -> None:
-        """处理 RelayServer.handle_input 相关的 GS 中继服务流程。"""
         session = self._require_session(websocket)
+
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
+
+        room_id = session.room_id
 
         require_fields(data, ("sessionId", "roomId", "payload"))
 
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 
-        if require_string_field(data, "roomId") != session.room_id:
+        if require_string_field(data, "roomId") != room_id:
             raise GsRequestError("ROOM_MISMATCH")
 
         # ------------------------------------------------------------
@@ -819,27 +912,27 @@ class RelayServer(
         #   payload 是 Base64(DES-CBC-PKCS7(JSON))
         #
         # payloadEncrypted=false:
-        #   payload 是明文 JSON 字符串
+        #   payload 是明文 JSON 字符串，或者直接是 dict
         #
         # 没传 payloadEncrypted 时默认 true，兼容旧客户端。
         # ------------------------------------------------------------
 
-        payload_encrypted = bool(data.get("payloadEncrypted", True))
+        payload_encrypted = self.read_bool(data.get("payloadEncrypted"), True)
 
         if payload_encrypted:
-            # 默认路径要求 payload 经过 KcGs 加密，并附带 ts/nonce 校验。
             payload = self.decrypt_payload(session, data)
         else:
-            # 明文 payload 只用于兼容旧客户端，仍然要做类型和房间字段校验。
             raw_payload = data.get("payload")
 
-            if not isinstance(raw_payload, str) or raw_payload.strip() == "":
+            if isinstance(raw_payload, dict):
+                payload = raw_payload
+            elif isinstance(raw_payload, str) and raw_payload.strip() != "":
+                try:
+                    payload = json.loads(raw_payload)
+                except json.JSONDecodeError as exc:
+                    raise GsRequestError("INVALID_PAYLOAD") from exc
+            else:
                 raise GsRequestError("INVALID_PAYLOAD")
-
-            try:
-                payload = json.loads(raw_payload)
-            except json.JSONDecodeError as exc:
-                raise GsRequestError("INVALID_PAYLOAD") from exc
 
             if not isinstance(payload, dict):
                 raise GsRequestError("INVALID_PAYLOAD")
@@ -850,24 +943,41 @@ class RelayServer(
         if require_string_field(payload, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 
-        if require_string_field(payload, "roomId") != session.room_id:
+        if require_string_field(payload, "roomId") != room_id:
             raise GsRequestError("ROOM_MISMATCH")
 
-        # 首个 INPUT 将房间从 STARTING 切换到 PLAYING
-        room_state = self.room_states.get(session.room_id)
+        # 首个 INPUT 将房间从 STARTING 切换到 PLAYING。
+        # 这里也重置该房间自己的 tick / CombatRuntime，避免第二局或多房间串状态。
+        room_state = self.room_states.get(room_id)
+
         if room_state is not None and room_state.get("status") == "STARTING":
+            if not room_state.get("runtime_reset_done", False):
+                room_state["runtime_reset_done"] = True
+                self.reset_room_runtime_state(room_id)
+
             room_state["status"] = "PLAYING"
-            print(f"[ROOM PLAYING] room={session.room_id}")
+
+            print(
+                f"[ROOM PLAYING] room={room_id} "
+                f"tick={self.get_room_tick(room_id)}"
+            )
+
+        tick = self.get_room_tick(room_id)
+        combat = self.get_room_combat(room_id)
+        room_sessions = self.get_room_sessions(room_id)
 
         cmd = self.parse_input_payload(payload)
 
         # ── seq 连续性校验 (P0-3) ──
         if session.last_seq >= 0 and cmd.seq <= session.last_seq:
             reject_reason = f"seq not increasing: {cmd.seq} <= {session.last_seq}"
-            print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
-            await self.maybe_broadcast_snapshot(
-                session.room_id, websocket, reject_reason
+
+            print(
+                f"[INPUT REJECT] room={room_id} "
+                f"client={session.client_id} {reject_reason}"
             )
+
+            await self.maybe_broadcast_snapshot(room_id, websocket, reject_reason)
             return
 
         # ── 拒绝客户端上传服务端权威字段 (P1-4) ──
@@ -885,13 +995,15 @@ class RelayServer(
 
         if found_forbidden:
             reject_reason = f"forbidden fields in INPUT: {sorted(found_forbidden)}"
-            print(f"[INPUT REJECT] client={session.client_id} {reject_reason}")
-            await self.maybe_broadcast_snapshot(
-                session.room_id, websocket, reject_reason
+
+            print(
+                f"[INPUT REJECT] room={room_id} "
+                f"client={session.client_id} {reject_reason}"
             )
+
+            await self.maybe_broadcast_snapshot(room_id, websocket, reject_reason)
             return
 
-        # 只有通过递增 seq 和禁用字段校验后，才承认这帧输入被服务端接受。
         session.last_seq = cmd.seq
         reject_reason = ""
 
@@ -902,7 +1014,7 @@ class RelayServer(
             session.accepted_grounded = False
             session.accepted_state = "Dead"
 
-            if self.tick >= session.respawn_at_tick and session.stocks > 0:
+            if tick >= session.respawn_at_tick and session.stocks > 0:
                 respawn_point = RESPAWN_POINTS.get(
                     session.client_id,
                     {"x": 0.0, "y": 3.0},
@@ -924,7 +1036,7 @@ class RelayServer(
                 session.last_hit_tick = -1
                 session.hitstun_until_tick = -1
 
-                self.combat.push_event(
+                combat.push_event(
                     "PLAYER_RESPAWN",
                     {
                         "clientId": session.client_id,
@@ -933,34 +1045,25 @@ class RelayServer(
                     },
                 )
 
-            # ── 本帧游戏模拟步进：按顺序处理 投射物 → 近战 → 空投 ──
-            # 这些步骤按特定顺序执行，确保物理更新的因果关系和碰撞检测的准确性。
+            combat.step_projectiles(room_sessions, tick)
+            combat.step_melee_hitboxes(room_sessions, tick)
 
-            # 1️⃣ 投射物步进：更新所有飞行中投射物的位置、速度、生命周期。
-            self.combat.step_projectiles(self.sessions, self.tick)
+            self.maybe_spawn_loot_for_room(room_id)
+            self.step_loots_for_room(room_id)
+            self.check_loot_pickups_for_room(room_id)
+            self.cleanup_dead_loots_for_room(room_id)
 
-            # 2️⃣ 近战命中检测：处理当前活跃的近战攻击框（melee hitbox）。
-            self.combat.step_melee_hitboxes(self.sessions, self.tick)
+            tick = self.advance_room_tick(room_id)
 
-            # 3️⃣ 空投生成：根据房间配置决定是否在本 tick 生成新空投。
-            self.maybe_spawn_loot_for_room(session.room_id)
+            if tick % 20 == 0:
+                print(
+                    f"[PERF] room={room_id} tick={tick} "
+                    f"projectiles={len(combat.projectiles)} "
+                    f"events={len(combat.pending_events)} "
+                    f"sessions={len(room_sessions)}"
+                )
 
-            # 4️⃣ 空投物理步进：更新已存在空投的下落状态。
-            self.step_loots_for_room(session.room_id)
-
-            # 5️⃣ 拾取检测：检查房间内玩家是否接近空投物。
-            self.check_loot_pickups_for_room(session.room_id)
-
-            # 6️⃣ 死亡空投清理：从房间移除已标记为死亡的空投物。
-            self.cleanup_dead_loots_for_room(session.room_id)
-
-            self.tick += 1
-
-            await self.maybe_broadcast_snapshot(
-                session.room_id,
-                websocket,
-                reject_reason,
-            )
+            await self.maybe_broadcast_snapshot(room_id, websocket, reject_reason)
             return
 
         # ── 武器 / 瞄准方向 ──
@@ -973,12 +1076,12 @@ class RelayServer(
             session.facing = 1 if cmd.move_x > 0 else -1
 
         # ── 受击硬直 ──
-        in_hitstun = getattr(session, "hitstun_until_tick", -1) > self.tick
+        in_hitstun = getattr(session, "hitstun_until_tick", -1) > tick
 
         if in_hitstun:
             session.accepted_state = "Hitstun"
             session.accepted_grounded = False
-        
+
         # ── 水平移动 ──
         if in_hitstun:
             next_x = session.pos_x + session.vel_x * SIM_DT
@@ -1059,38 +1162,39 @@ class RelayServer(
                 session.attack_hold_ticks = 0
 
         # ── 攻击 ──
-        if not in_hitstun and self.should_execute_attack(session, cmd):
-            self.combat.execute_attack(
+        if not in_hitstun and self.should_execute_attack(session, cmd, tick):
+            combat.execute_attack(
                 attacker=session,
                 aim_x=cmd.aim_x,
                 aim_y=cmd.aim_y,
-                tick=self.tick,
-                sessions=self.sessions,
+                tick=tick,
+                sessions=room_sessions,
             )
 
         # ── 垂直运动 ──
         self.step_vertical(session)
 
-        if in_hitstun and getattr(session, "hitstun_until_tick", -1) <= self.tick + 1:
+        if in_hitstun and getattr(session, "hitstun_until_tick", -1) <= tick + 1:
             if session.accepted_grounded:
                 session.accepted_state = "Grounded"
             else:
                 session.accepted_state = "Fall"
 
         # ── 投射物 / 近战 / 空投 ──
-        self.combat.step_projectiles(self.sessions, self.tick)
-        self.combat.step_melee_hitboxes(self.sessions, self.tick)
-        self.maybe_spawn_loot_for_room(session.room_id)
-        self.step_loots_for_room(session.room_id)
-        self.check_loot_pickups_for_room(session.room_id)
-        self.cleanup_dead_loots_for_room(session.room_id)
+        combat.step_projectiles(room_sessions, tick)
+        combat.step_melee_hitboxes(room_sessions, tick)
+
+        self.maybe_spawn_loot_for_room(room_id)
+        self.step_loots_for_room(room_id)
+        self.check_loot_pickups_for_room(room_id)
+        self.cleanup_dead_loots_for_room(room_id)
 
         # ── 出界 / 命数 ──
         if game_simulation.is_out_of_bounds(session.pos_x, session.pos_y):
             if not session.is_dead:
                 session.stocks -= 1
 
-                self.combat.push_event(
+                combat.push_event(
                     "PLAYER_OUT_OF_BOUNDS",
                     {
                         "clientId": session.client_id,
@@ -1106,7 +1210,7 @@ class RelayServer(
                     session.vel_y = 0.0
                 else:
                     session.is_dead = True
-                    session.respawn_at_tick = self.tick + RESPAWN_DELAY_TICKS
+                    session.respawn_at_tick = tick + RESPAWN_DELAY_TICKS
                     session.accepted_state = "Dead"
                     session.accepted_grounded = False
                     session.accepted_jump_count = 0
@@ -1118,75 +1222,18 @@ class RelayServer(
                     session.last_hit_tick = -1
                     session.hitstun_until_tick = -1
 
-        self.tick += 1
+        tick = self.advance_room_tick(room_id)
 
-        if self.tick % 20 == 0:
+        if tick % 20 == 0:
             print(
-                f"[PERF] tick={self.tick} "
-                f"projectiles={len(self.combat.projectiles)} "
-                f"events={len(self.combat.pending_events)} "
-                f"sessions={len(self.sessions)}"
+                f"[PERF] room={room_id} tick={tick} "
+                f"projectiles={len(combat.projectiles)} "
+                f"events={len(combat.pending_events)} "
+                f"sessions={len(room_sessions)}"
             )
 
-        await self.check_game_over(session.room_id)
-        await self.maybe_broadcast_snapshot(session.room_id, websocket, reject_reason)
-    # ═══════════════════════════════════════════════════════════════
-    # SNAPSHOT (阶段五第4步)
-    # ═══════════════════════════════════════════════════════════════
-
-    async def handle_chat(self, websocket: Any, data: Dict[str, Any]) -> None:
-        """处理 RelayServer.handle_chat 相关的 GS 中继服务流程。"""
-        session = self._require_session(websocket)
-        if not session.room_id or not session.client_id:
-            raise GsRequestError("NOT_IN_ROOM")
-
-        require_fields(data, ("sessionId", "roomId", "payload"))
-        if require_string_field(data, "sessionId") != session.session_id:
-            raise GsRequestError("SESSION_MISMATCH")
-        if require_string_field(data, "roomId") != session.room_id:
-            raise GsRequestError("ROOM_MISMATCH")
-        if not isinstance(data.get("payload"), str):
-            raise GsRequestError("INVALID_PAYLOAD")
-
-        payload = self.decrypt_payload(session, data)
-        if require_string_field(payload, "type") != TYPE_CHAT:
-            raise GsRequestError("TYPE_MISMATCH")
-        if require_string_field(payload, "sessionId") != session.session_id:
-            raise GsRequestError("SESSION_MISMATCH")
-        if require_string_field(payload, "roomId") != session.room_id:
-            raise GsRequestError("ROOM_MISMATCH")
-
-        text = require_string_field(payload, "text").strip()
-        if not text:
-            return
-
-        payload_obj = {
-            "type": TYPE_CHAT,
-            "roomId": session.room_id,
-            "fromClientId": session.client_id,
-            "text": text,
-            "timestamp": self.utc_now_iso(),
-        }
-        for peer in list(self.rooms.get(session.room_id, set())):
-            peer_session = self.sessions.get(peer)
-            if peer_session is None or not peer_session.authenticated:
-                continue
-            encrypted = self.encrypt_payload(
-                peer_session,
-                {
-                    **payload_obj,
-                    "sessionId": peer_session.session_id or "",
-                },
-            )
-            await self.send_json(
-                peer,
-                {
-                    "type": TYPE_CHAT,
-                    "sessionId": peer_session.session_id or "",
-                    "roomId": session.room_id,
-                    "payload": encrypted,
-                },
-            )
+        await self.check_game_over(room_id)
+        await self.maybe_broadcast_snapshot(room_id, websocket, reject_reason)
 
     # ═══════════════════════════════════════════════════════════════
     # Cleanup / utils
@@ -1267,15 +1314,43 @@ class RelayServer(
         print(
             f"[FORGET SOCKET] reason={reason} oldClient={old_client_id} sessions={len(self.sessions)}"
         )
+    @staticmethod
+    def read_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
 
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, str):
+            v = value.strip().lower()
+
+            if v in ("true", "1", "yes", "y", "on"):
+                return True
+
+            if v in ("false", "0", "no", "n", "off"):
+                return False
+
+            return default
+
+        return bool(value)
     def remove_from_room(self, websocket: Any, room_id: str) -> None:
         """处理 RelayServer.remove_from_room 相关的 GS 中继服务流程。"""
         members = self.rooms.get(room_id)
+
         if not members:
             return
+
         members.discard(websocket)
+
         if not members:
             self.rooms.pop(room_id, None)
+
+            # 注意：
+            # 不要在这里 cleanup_room_runtime_state。
+            # 因为 PLAYING / STARTING 断线时还可能进入 reconnect grace，
+            # runtime 要保留给重连。
+            print(f"[ROOM MEMBERS EMPTY] room={room_id}, runtime kept")
 
     async def send_error(self, websocket: Any, error_message: str) -> None:
         """处理 RelayServer.send_error 相关的 GS 中继服务流程。"""
