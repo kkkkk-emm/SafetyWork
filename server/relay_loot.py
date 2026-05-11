@@ -84,27 +84,43 @@ class LootManagerMixin:
         return candidates[0]
 
     def maybe_spawn_loot_for_room(self: RelayServerContext, room_id: str) -> None:
-        """在间隔 tick 到达且场上空投数未达到上限时，随机生成一个空投。
-
-        空投类型按 LOOT_TYPE_WEIGHTS 权重随机：effect（效果道具）或 weapon（武器）。
-        空投从 LOOT_SPAWN_Y 高度生成，将在后续 step 中受重力下落。
-        """
+        """在间隔 tick 到达且场上空投数未达到上限时，随机生成一个空投。"""
         if not room_id:
             return
-        next_tick = self.room_next_loot_tick.get(room_id, 0)
-        if self.tick < next_tick:
+
+        tick = self.get_room_tick(room_id)
+        combat = self.get_room_combat(room_id)
+
+        next_tick = self.room_next_loot_tick.get(room_id)
+
+        # 第一次进入 PLAYING 后，初始化下一次空投时间。
+        # 如果你想开局立刻掉空投，把这里改成 tick。
+        if next_tick is None:
+            self.room_next_loot_tick[room_id] = tick + LOOT_SPAWN_INTERVAL_TICKS
+            print(
+                f"[LOOT INIT] room={room_id} "
+                f"tick={tick} next={self.room_next_loot_tick[room_id]}"
+            )
             return
+
+        if tick < next_tick:
+            return
+
         loots = self.get_room_loots(room_id)
         alive_count = sum(1 for loot in loots.values() if loot.alive)
+
         if alive_count >= LOOT_MAX_ALIVE:
-            self.room_next_loot_tick[room_id] = self.tick + LOOT_SPAWN_INTERVAL_TICKS
+            self.room_next_loot_tick[room_id] = tick + LOOT_SPAWN_INTERVAL_TICKS
             return
+
         x = self.choose_random_loot_x()
+
         effect_weight = float(LOOT_TYPE_WEIGHTS.get("effect", 0.7))
         weapon_weight = float(LOOT_TYPE_WEIGHTS.get("weapon", 0.3))
         total_weight = max(0.0001, effect_weight + weapon_weight)
+
         roll = _GAME_RANDOM.random() * total_weight
-        # 权重优先决定道具大类；若对应池为空则降级到另一类，避免生成无效 itemId。
+
         if roll < effect_weight and EFFECT_DROP_POOL:
             loot_type = "effect"
             item_id = _GAME_RANDOM.choice(EFFECT_DROP_POOL)
@@ -116,8 +132,10 @@ class LootManagerMixin:
             item_id = _GAME_RANDOM.choice(EFFECT_DROP_POOL)
         else:
             return
+
         loot_id = f"loot_{self.next_loot_id}"
         self.next_loot_id += 1
+
         loot = ServerLoot(
             loot_id=loot_id,
             loot_type=loot_type,
@@ -130,8 +148,10 @@ class LootManagerMixin:
             landed=False,
             target_platform_y=0.0,
         )
+
         loots[loot_id] = loot
-        self.combat.push_event(
+
+        combat.push_event(
             "LOOT_SPAWNED",
             {
                 "lootId": loot.loot_id,
@@ -142,33 +162,51 @@ class LootManagerMixin:
                 "radius": loot.radius,
             },
         )
-        self.room_next_loot_tick[room_id] = self.tick + LOOT_SPAWN_INTERVAL_TICKS
+
+        self.room_next_loot_tick[room_id] = tick + LOOT_SPAWN_INTERVAL_TICKS
+
+        print(
+            f"[LOOT SPAWNED] room={room_id} "
+            f"tick={tick} next={self.room_next_loot_tick[room_id]} "
+            f"id={loot_id} type={loot_type} item={item_id}"
+        )
 
     def step_loots_for_room(self: RelayServerContext, room_id: str) -> None:
-        """处理 LootManagerMixin.step_loots_for_room 相关的道具生成、拾取或清理逻辑。"""
         if not room_id:
             return
+
         loots = self.get_room_loots(room_id)
+
         if not loots:
             return
+
+        combat = self.get_room_combat(room_id)
+
         for loot in loots.values():
             if not loot.alive or loot.landed:
                 continue
+
             previous_y = loot.pos_y
             loot.vel_y += LOOT_GRAVITY
+
             if loot.vel_y < LOOT_FALL_SPEED_CAP:
                 loot.vel_y = LOOT_FALL_SPEED_CAP
+
             next_y = loot.pos_y + loot.vel_y * SIM_DT
-            # 用 previous_y -> next_y 的垂直线段找平台，避免高帧间位移穿透平台。
+
             landing_y = self.find_loot_landing_platform_y(
-                x=loot.pos_x, previous_y=previous_y, next_y=next_y
+                x=loot.pos_x,
+                previous_y=previous_y,
+                next_y=next_y,
             )
+
             if landing_y is not None:
                 loot.pos_y = landing_y
                 loot.vel_y = 0.0
                 loot.landed = True
                 loot.target_platform_y = landing_y
-                self.combat.push_event(
+
+                combat.push_event(
                     "LOOT_LANDED",
                     {
                         "lootId": loot.loot_id,
@@ -182,12 +220,16 @@ class LootManagerMixin:
                 loot.pos_y = next_y
 
     def check_loot_pickups_for_room(self: RelayServerContext, room_id: str) -> None:
-        """处理 LootManagerMixin.check_loot_pickups_for_room 相关的道具生成、拾取或清理逻辑。"""
         if not room_id:
             return
+
         loots = self.get_room_loots(room_id)
+
         if not loots:
             return
+
+        combat = self.get_room_combat(room_id)
+
         for session in list(self.sessions.values()):
             if (
                 session.room_id != room_id
@@ -195,22 +237,28 @@ class LootManagerMixin:
                 or session.is_dead
             ):
                 continue
+
             player_center_y = session.pos_y + 0.4
+
             for loot in list(loots.values()):
                 if not loot.alive:
                     continue
+
                 if LOOT_PICKUP_ONLY_WHEN_LANDED and not loot.landed:
                     continue
+
                 dx = session.pos_x - loot.pos_x
                 dy = player_center_y - loot.pos_y
                 dist_sq = dx * dx + dy * dy
                 pickup_radius = max(loot.radius, LOOT_PICKUP_RADIUS)
+
                 if dist_sq > pickup_radius * pickup_radius:
                     continue
-                # 拾取后立即标记为非存活，清理由 cleanup_dead_loots_for_room 统一完成。
+
                 self.apply_loot_to_session(session, loot)
                 loot.alive = False
-                self.combat.push_event(
+
+                combat.push_event(
                     "LOOT_PICKED",
                     {
                         "lootId": loot.loot_id,

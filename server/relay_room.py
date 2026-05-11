@@ -643,8 +643,15 @@ class RoomLifecycleMixin:
         room_id = session.room_id
         await self.remove_player_from_room_state(websocket, room_id)
         self.remove_from_room(websocket, room_id)
+
+        room_empty = room_id not in self.rooms or not self.rooms.get(room_id)
+
+        if room_empty:
+            self.cleanup_room_runtime_state(room_id)
+
         session.room_id = None
         session.client_id = None
+
         await self.broadcast_room_state(room_id)
 
     async def remove_player_from_room_state(

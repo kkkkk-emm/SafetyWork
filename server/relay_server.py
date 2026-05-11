@@ -511,7 +511,7 @@ class RelayServer(
             room_id = grace_info["room_id"]
 
             # 同步客户端上报的 seq，确保服务端知道客户端已处理到哪一帧。
-            old_session.last_seq = max(old_session.last_seq, last_processed_seq)
+            old_session.last_seq = -1
             old_session.authenticated = True
             # 把旧会话关联到新的 websocket（新连接）。
             self.sessions[websocket] = old_session
@@ -1275,7 +1275,10 @@ class RelayServer(
                 )
 
             self.remove_from_room(websocket, old_room_id)
+            room_empty = old_room_id not in self.rooms or not self.rooms.get(old_room_id)
 
+        if room_empty:
+            self.cleanup_room_runtime_state(old_room_id)
             try:
                 await self.broadcast_room_state(old_room_id)
             except Exception as exc:

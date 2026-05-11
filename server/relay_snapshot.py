@@ -8,6 +8,7 @@ from game_config import (
     SNAPSHOT_FORCE_BROADCAST_ON_EVENTS,
     SNAPSHOT_INTERVAL_TICKS,
     SNAPSHOT_THROTTLE_ENABLED,
+    SNAPSHOT_ENCRYPT_EVERY_N,
 )
 from game_models import ClientSession
 from gs_protocol import TYPE_RESULT, TYPE_SNAPSHOT
@@ -148,23 +149,50 @@ class SnapshotBroadcastMixin:
         reject_reason: str,
     ) -> None:
         snapshot = self.build_snapshot_payload(session, reject_reason)
-        # 用 KcGs 加密 snapshot payload
-        encrypted = self.encrypt_payload(
-            session,
-            {
+
+        payload_obj = {
+            "type": TYPE_SNAPSHOT,
+            "sessionId": session.session_id or "",
+            "roomId": session.room_id or "",
+            **snapshot,
+        }
+
+        encrypt_every_n = int(SNAPSHOT_ENCRYPT_EVERY_N)
+
+        should_encrypt = False
+
+        # 0 = 全部明文
+        if encrypt_every_n <= 0:
+            should_encrypt = False
+
+        # 1 = 每条都加密
+        elif encrypt_every_n == 1:
+            should_encrypt = True
+
+        # N = 每 N 条加密一次
+        else:
+            tick = int(snapshot.get("tick", 0))
+            should_encrypt = tick % encrypt_every_n == 0
+
+        if should_encrypt:
+            payload = self.encrypt_payload(session, payload_obj)
+
+            response = {
                 "type": TYPE_SNAPSHOT,
                 "sessionId": session.session_id or "",
-                "roomId": session.room_id or "",
-                **snapshot,
-            },
-        )
-        response = {
-        "type": TYPE_SNAPSHOT,
-        "sessionId": session.session_id or "",
-        "roomId": session.room_id,
-        "payloadEncrypted": True,
-        "payload": encrypted,
-    }
+                "roomId": session.room_id,
+                "payloadEncrypted": True,
+                "payload": payload,
+            }
+        else:
+            response = {
+                "type": TYPE_SNAPSHOT,
+                "sessionId": session.session_id or "",
+                "roomId": session.room_id,
+                "payloadEncrypted": False,
+                "payload": json.dumps(payload_obj, ensure_ascii=False),
+            }
+
         await websocket.send(json.dumps(response, ensure_ascii=False))
 
     async def broadcast_snapshot(
