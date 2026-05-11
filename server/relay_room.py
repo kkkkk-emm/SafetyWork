@@ -266,30 +266,86 @@ class RoomLifecycleMixin:
     # ═══════════════════════════════════════════════════════════════
 
     async def handle_join_room(
-        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
-    ) -> None:
-        """处理 RoomLifecycleMixin.handle_join_room 相关的房间生命周期逻辑。"""
+    self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+) -> None:
+        """处理 ROOM_JOIN_REQ：只能加入服务器内存中已经存在的指定房间。"""
         session = self._require_session(websocket)
 
         require_fields(data, ("sessionId", "roomId", "auth"))
+
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 
+        # 顶层 roomId：客户端输入的目标房间号
+        room_id = require_string_field(data, "roomId").strip().upper()
+
+        if not room_id:
+            raise GsRequestError("ROOM_ID_REQUIRED")
+
+        # 规范化，后续 _internal_join_room 也使用这个 roomId
+        data["roomId"] = room_id
+
         auth = self.decrypt_auth(session, data)
+
         if require_string_field(auth, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
-        # 安全：auth 内 roomId 必须与顶层一致——防止客户端用伪造的 auth 加入别人的房间
-        if require_string_field(auth, "roomId") != require_string_field(data, "roomId"):
+
+        auth_room_id = require_string_field(auth, "roomId").strip().upper()
+
+        # 安全：auth 内 roomId 必须与顶层一致
+        if auth_room_id != room_id:
             raise GsRequestError("ROOM_MISMATCH")
+
         if require_string_field(auth, "type") != TYPE_ROOM_JOIN_REQ:
             raise GsRequestError("TYPE_MISMATCH")
 
+        # ============================================================
+        # 关键新增：
+        # 手动加入指定房间时，房间必须已经存在于服务器内存。
+        # 不允许 _internal_join_room 通过 get_or_create_room_state 自动创建。
+        # ============================================================
+        if room_id not in self.rooms or room_id not in self.room_states:
+            print(
+                f"[JOIN REJECT] ROOM_NOT_FOUND "
+                f"room={room_id} "
+                f"client={session.client_id} "
+                f"sessionId={session.session_id}"
+            )
+            raise GsRequestError("ROOM_NOT_FOUND")
+
+        room_state = self.room_states.get(room_id)
+        members = self.rooms.get(room_id)
+
+        if room_state is None or members is None:
+            print(
+                f"[JOIN REJECT] ROOM_NOT_FOUND incomplete state "
+                f"room={room_id}"
+            )
+            raise GsRequestError("ROOM_NOT_FOUND")
+
+        status = str(room_state.get("status", "WAITING")).upper()
+
+        # 已经开始/结算的房间不允许普通 JOIN
+        if status != "WAITING":
+            print(
+                f"[JOIN REJECT] ROOM_NOT_JOINABLE "
+                f"room={room_id} status={status}"
+            )
+            raise GsRequestError("ROOM_NOT_JOINABLE")
+
+        # 你的规则是最多 2 人
+        if len(members) >= 2:
+            print(f"[JOIN REJECT] ROOM_FULL room={room_id}")
+            raise GsRequestError("ROOM_FULL")
+
         join_auth_nonce = require_string_field(auth, "nonce")
-        data["clientId"] = session.client_id  # 使用已认证的 clientId
+
+        # 使用已认证 session 的 clientId，不相信客户端上传的 clientId
+        data["clientId"] = session.client_id
+
         await self._internal_join_room(websocket, data)
 
-        # 返回 ROOM_JOIN_REP (nonce 回显 ROOM_JOIN_REQ 的 auth.nonce)
-        room_id = require_string_field(data, "roomId")
+        # 返回 ROOM_JOIN_REP
         rep_payload = self.encrypt_payload(
             session,
             {
@@ -300,6 +356,7 @@ class RoomLifecycleMixin:
                 "nonce": join_auth_nonce,
             },
         )
+
         await self.send_json(
             websocket,
             {
