@@ -62,6 +62,7 @@ class CombatRuntime:
     方便单元测试和逻辑复用。
     """
     def __init__(self) -> None:
+        """处理 CombatRuntime.__init__ 相关的战斗模拟、命中或事件逻辑。"""
         self.projectiles: Dict[int, ServerProjectile] = {}
         self.melee_hitboxes: Dict[int, ServerMeleeHitbox] = {}
 
@@ -76,18 +77,23 @@ class CombatRuntime:
     # ------------------------------------------------------------------
 
     def get_weapon_cfg(self, weapon_id: str) -> dict:
+        """处理 CombatRuntime.get_weapon_cfg 相关的战斗模拟、命中或事件逻辑。"""
         return resolve_weapon_cfg(weapon_id)
 
     def get_bullet_cfg(self, bullet_id: str) -> dict:
+        """处理 CombatRuntime.get_bullet_cfg 相关的战斗模拟、命中或事件逻辑。"""
         return resolve_bullet_cfg(bullet_id)
 
     def get_weapon_bullet_id(self, weapon_cfg: dict) -> str:
+        """处理 CombatRuntime.get_weapon_bullet_id 相关的战斗模拟、命中或事件逻辑。"""
         return resolve_weapon_bullet_id(weapon_cfg)
 
     def resolve_visual_id(self, bullet_id: str, bullet_cfg: dict) -> str:
+        """处理 CombatRuntime.resolve_visual_id 相关的战斗模拟、命中或事件逻辑。"""
         return resolve_bullet_visual_id(bullet_id, bullet_cfg)
 
     def normalize_special_bullet_id(self, bullet_id: str) -> str:
+        """处理 CombatRuntime.normalize_special_bullet_id 相关的战斗模拟、命中或事件逻辑。"""
         return normalize_bullet_alias(bullet_id)
 
     # ------------------------------------------------------------------
@@ -95,6 +101,7 @@ class CombatRuntime:
     # ------------------------------------------------------------------
 
     def push_event(self, event_type: str, data: dict) -> None:
+        """处理 CombatRuntime.push_event 相关的战斗模拟、命中或事件逻辑。"""
         self.pending_events.append(
             MatchEvent(
                 event_type=event_type,
@@ -105,6 +112,7 @@ class CombatRuntime:
         self.next_event_seq += 1
 
     def clear_events(self) -> None:
+        """处理 CombatRuntime.clear_events 相关的战斗模拟、命中或事件逻辑。"""
         self.pending_events.clear()
 
     # ------------------------------------------------------------------
@@ -119,6 +127,7 @@ class CombatRuntime:
         tick: int,
         sessions: Dict[object, ClientSession],
     ) -> None:
+        """处理 CombatRuntime.execute_attack 相关的战斗模拟、命中或事件逻辑。"""
         if attacker is None or attacker.client_id is None or attacker.is_dead:
             return
 
@@ -164,6 +173,7 @@ class CombatRuntime:
     def normalize_aim(
         self, owner: ClientSession, aim_x: float, aim_y: float
     ) -> tuple[float, float]:
+        """处理 CombatRuntime.normalize_aim 相关的战斗模拟、命中或事件逻辑。"""
         mag = math.sqrt(aim_x * aim_x + aim_y * aim_y)
 
         if mag <= 0.0001:
@@ -181,6 +191,7 @@ class CombatRuntime:
     def spawn_projectile(
         self, owner: ClientSession, aim_x: float, aim_y: float
     ) -> None:
+        """处理 CombatRuntime.spawn_projectile 相关的战斗模拟、命中或事件逻辑。"""
         if owner.is_dead or owner.client_id is None:
             return
 
@@ -200,6 +211,7 @@ class CombatRuntime:
 
         base_angle_rad = math.atan2(dir_y, dir_x)
 
+        # 多弹丸武器把散射角均匀铺在瞄准方向两侧，单发武器保持零偏移。
         if pellet_count == 1:
             angle_offsets_deg = [0.0]
         else:
@@ -250,6 +262,7 @@ class CombatRuntime:
         bullet_id: str,
         bullet_cfg: dict,
     ) -> None:
+        """处理 CombatRuntime._spawn_one_projectile 相关的战斗模拟、命中或事件逻辑。"""
         speed = float(bullet_cfg.get("speed", weapon_cfg.get("projectile_speed", 18.0)))
         radius = float(
             bullet_cfg.get("radius", weapon_cfg.get("projectile_radius", 0.2))
@@ -293,6 +306,7 @@ class CombatRuntime:
             )
         )
 
+        # 出生点向枪口方向和角色上方偏移，避免投射物从角色中心或地面生成。
         rotation_deg = math.degrees(math.atan2(dir_y, dir_x))
 
         proj = ServerProjectile(
@@ -367,6 +381,7 @@ class CombatRuntime:
         visual_id: str = "",
         rotation_deg: Optional[float] = None,
     ) -> None:
+        """处理 CombatRuntime.spawn_custom_projectile 相关的战斗模拟、命中或事件逻辑。"""
         if not bullet_id:
             bullet_id = weapon_id
 
@@ -449,6 +464,10 @@ class CombatRuntime:
         aim_x: float,
         aim_y: float,
     ) -> None:
+        """处理 CombatRuntime.spawn_melee_hitbox 相关的战斗模拟、命中或事件逻辑。"""
+        # 先根据近战配置名查表。
+        # 如果配置不存在，或者攻击者还没有绑定 client_id，就直接放弃生成。
+        # 这样可以避免生成一个没有来源、没有归属的无效近战判定框。
         cfg = MELEE_DB.get(melee_profile)
         if cfg is None or attacker.client_id is None:
             debug_print(
@@ -457,6 +476,8 @@ class CombatRuntime:
             )
             return
 
+        # 近战的朝向优先使用输入里的 aim 向量。
+        # 如果玩家没有提供有效瞄准方向，则退回到角色当前 facing，保证近战仍然有明确前向。
         dir_x = aim_x
         dir_y = aim_y
         mag = math.sqrt(dir_x * dir_x + dir_y * dir_y)
@@ -466,12 +487,20 @@ class CombatRuntime:
             dir_y = 0.0
             mag = 1.0
 
+        # 归一化方向向量，后续无论是计算出生点偏移还是命中方向都能统一使用。
         dir_x /= mag
         dir_y /= mag
 
+        # 近战判定盒不是生成在角色中心，而是按配置从角色当前位置向攻击方向偏移。
+        # offset_x / offset_y 决定命中框离角色身体的“伸出距离”。
         center_x = attacker.pos_x + dir_x * float(cfg["offset_x"])
         center_y = attacker.pos_y + float(cfg["offset_y"]) + dir_y * 0.15
 
+        # 创建服务器权威的近战 hitbox：
+        # - owner_client_id：归属哪个玩家
+        # - effect_ids：继承攻击者当前装备效果
+        # - radius / damage / base_knockback / ttl：都来自近战配置
+        # - hit_once：是否命中一次后立即销毁
         hitbox = ServerMeleeHitbox(
             hitbox_id=self.next_melee_hitbox_id,
             owner_client_id=attacker.client_id,
@@ -489,6 +518,7 @@ class CombatRuntime:
         self.melee_hitboxes[hitbox.hitbox_id] = hitbox
         self.next_melee_hitbox_id += 1
 
+        # 近战生成也要进入事件流，这样快照和客户端表现层都能同步看到它的诞生。
         self.push_event(
             "MELEE_HITBOX_SPAWNED",
             {
@@ -582,6 +612,7 @@ class CombatRuntime:
         next_y: float,
         radius: float,
     ) -> bool:
+        """处理 CombatRuntime.projectile_swept_hits_world 相关的战斗模拟、命中或事件逻辑。"""
         for wall in game_simulation.MAP_WALLS:
             left = wall.x_min - radius
             right = wall.x_max + radius
@@ -630,6 +661,7 @@ class CombatRuntime:
         radius: float,
         owner_client_id: str,
     ) -> Optional[ClientSession]:
+        """处理 CombatRuntime.find_projectile_swept_hit_player 相关的战斗模拟、命中或事件逻辑。"""
         for session in sessions.values():
             if session.client_id is None:
                 continue
@@ -673,6 +705,7 @@ class CombatRuntime:
         sessions: Dict[object, ClientSession],
         client_id: str,
     ) -> Optional[ClientSession]:
+        """处理 CombatRuntime.find_session_by_client_id 相关的战斗模拟、命中或事件逻辑。"""
         for session in sessions.values():
             if session.client_id == client_id:
                 return session
@@ -687,6 +720,7 @@ class CombatRuntime:
         radius: float,
         ignore_client_id: Optional[str] = None,
     ) -> List[ClientSession]:
+        """处理 CombatRuntime.find_players_in_radius 相关的战斗模拟、命中或事件逻辑。"""
         result: List[ClientSession] = []
         rr = radius * radius
 
@@ -712,6 +746,7 @@ class CombatRuntime:
         radius: float,
         ignore_owner_client_id: Optional[str] = None,
     ) -> List[ServerProjectile]:
+        """处理 CombatRuntime.find_projectiles_in_radius 相关的战斗模拟、命中或事件逻辑。"""
         result: List[ServerProjectile] = []
         rr = radius * radius
 
@@ -752,9 +787,11 @@ class CombatRuntime:
         weapon_id: str,
         tick: int,
     ) -> None:
+        """处理 CombatRuntime.apply_hit 相关的战斗模拟、命中或事件逻辑。"""
         if target.is_dead:
             return
 
+        # 命中结算全部由服务端基于当前状态计算，忽略客户端上报的伤害和击退值。
         final_damage = max(0.0, float(damage))
 
         # 命中前百分比：用于大乱斗击飞公式
@@ -867,6 +904,7 @@ class CombatRuntime:
         sessions: Dict[object, ClientSession],
         tick: int,
     ) -> None:
+        """处理 CombatRuntime.step_projectiles 相关的战斗模拟、命中或事件逻辑。"""
         dead_ids = set()
 
         for proj in list(self.projectiles.values()):
@@ -918,6 +956,7 @@ class CombatRuntime:
             )
 
             if not proj.alive:
+                # before_move 效果可能会主动销毁投射物，例如分裂或延迟爆炸。
                 dead_ids.add(proj.proj_id)
                 continue
 
@@ -1000,6 +1039,7 @@ class CombatRuntime:
             )
 
             if target is not None:
+                # 使用 swept 检测结果结算命中，避免高速投射物一帧跨过玩家。
                 attacker = self.find_session_by_client_id(
                     sessions,
                     proj.owner_client_id,
@@ -1097,6 +1137,7 @@ class CombatRuntime:
         sessions: Dict[object, ClientSession],
         tick: int,
     ) -> None:
+        """处理 CombatRuntime.step_melee_hitboxes 相关的战斗模拟、命中或事件逻辑。"""
         dead_ids = set()
 
         for hitbox in list(self.melee_hitboxes.values()):
@@ -1132,6 +1173,7 @@ class CombatRuntime:
 
             for target in targets:
                 if target.client_id in hitbox.hit_targets:
+                    # 同一个近战判定框不会对同一目标重复造成伤害。
                     continue
 
                 self.apply_hit(

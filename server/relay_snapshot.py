@@ -29,6 +29,7 @@ from relay_contracts import RelayServerContext
 
 
 class SnapshotBroadcastMixin:
+    """处理 SnapshotBroadcastMixin 相关的快照构造或广播逻辑。"""
     async def maybe_broadcast_snapshot(
         self: RelayServerContext,
         room_id: str,
@@ -40,25 +41,41 @@ class SnapshotBroadcastMixin:
         节流逻辑：SNAPSHOT_THROTTLE_ENABLED=True 时每 N tick 广播一次，
         但有事件时（SNAPSHOT_FORCE_BROADCAST_ON_EVENTS=True）强制立即广播。
         """
+        # 没有有效 room_id 说明当前请求不处于对局房间上下文。
         if not room_id:
             return
+
+        # 默认允许广播；后续在开启节流时再按 tick 规则收紧。
         should_broadcast = True
+
+        # interval 至少为 1，避免配置误填 0 或负数导致除零/异常行为。
         if SNAPSHOT_THROTTLE_ENABLED:
             interval = max(1, int(SNAPSHOT_INTERVAL_TICKS))
+            # tick 命中周期点才广播，其余帧跳过，降低带宽与序列化开销。
             should_broadcast = self.tick % interval == 0
+
+        # 事件强制广播：即使当前帧未命中节流周期，只要有待发送事件也立即推送。
         if SNAPSHOT_FORCE_BROADCAST_ON_EVENTS and len(self.combat.pending_events) > 0:
             should_broadcast = True
+
         if not should_broadcast:
             return
+
+        # 执行房间广播：reject_reason 仅绑定到当前 websocket 对应的会话，
+        # 其他玩家收到的是空 rejectReason，避免把某个玩家的拒绝原因错误扩散给全房间。
         await self.broadcast_snapshot(
             room_id, reject_reason_by_socket={websocket: reject_reason}
         )
+
+        # 广播成功后清空本 tick 事件。
         self.combat.clear_events()
 
     def build_snapshot_payload(
         self: RelayServerContext, session: ClientSession, reject_reason: str
     ) -> dict:
+        """处理 SnapshotBroadcastMixin.build_snapshot_payload 相关的快照构造或广播逻辑。"""
         players = []
+        # 快照只包含同房间玩家，且按服务端认可状态输出，客户端预测状态不会直接透传。
         for s in self.sessions.values():
             if s.room_id != session.room_id or s.client_id is None:
                 continue
@@ -88,6 +105,7 @@ class SnapshotBroadcastMixin:
                 }
             )
         projectiles = []
+        # 仅广播仍存活的投射物，死亡投射物通过事件流通知客户端播放销毁效果。
         for p in self.combat.projectiles.values():
             if not p.alive:
                 continue
@@ -127,6 +145,7 @@ class SnapshotBroadcastMixin:
                 }
             )
         events = []
+        # pending_events 是本 tick 的可靠事件补充，快照发送后由调用方清空。
         for e in self.combat.pending_events:
             events.append(
                 {"eventType": e.event_type, "eventSeq": e.event_seq, "data": e.data}
@@ -142,11 +161,12 @@ class SnapshotBroadcastMixin:
         }
 
     async def send_snapshot(
-    self: RelayServerContext,
-    websocket: Any,
-    session: ClientSession,
-    reject_reason: str,
-) -> None:
+        self: RelayServerContext,
+        websocket: Any,
+        session: ClientSession,
+        reject_reason: str,
+    ) -> None:
+        """处理 SnapshotBroadcastMixin.send_snapshot 相关的快照构造或广播逻辑。"""
         snapshot = self.build_snapshot_payload(session, reject_reason)
 
         payload_obj = {
@@ -161,10 +181,11 @@ class SnapshotBroadcastMixin:
         # 0  = 全部明文
         # 1  = 每个 SNAPSHOT 都加密
         # 10 = 每 10 个 SNAPSHOT 加密一次
+        # 周期性加密用于兼顾调试可读性和线上链路的基础保密性。
         payload_encrypted = (
-        encrypt_every_n > 0
-        and self.tick % encrypt_every_n == 0
-    )
+            encrypt_every_n > 0
+            and self.tick % encrypt_every_n == 0
+        )
 
         if payload_encrypted:
             payload = self.encrypt_payload(session, payload_obj)
@@ -336,7 +357,3 @@ class SnapshotBroadcastMixin:
         self.combat.clear_events()
         self.room_loots.pop(room_id, None)
         self.room_next_loot_tick.pop(room_id, None)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Chat
-    # ═══════════════════════════════════════════════════════════════

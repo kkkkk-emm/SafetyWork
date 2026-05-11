@@ -19,6 +19,7 @@ from relay_contracts import RelayServerContext
 
 
 class GsErrorHandlingMixin:
+    """封装 GsErrorHandlingMixin 相关的 GS 错误响应和审计逻辑。"""
     async def run_with_error_response(
         self: RelayServerContext,
         websocket: Any,

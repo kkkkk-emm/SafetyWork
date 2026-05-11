@@ -25,12 +25,14 @@ EFFECT_ID_ALIASES = {
 
 
 def normalize_effect_id(effect_id: str) -> str:
+    """规范化 normalize_effect_id 相关的效果 ID 数据。"""
     if effect_id is None:
         return ""
     return EFFECT_ID_ALIASES.get(effect_id, effect_id)
 
 
 def normalize_effect_list(effect_ids: List[str]) -> List[str]:
+    """规范化 normalize_effect_list 相关的效果 ID 数据。"""
     result = []
     if effect_ids is None:
         return result

@@ -40,6 +40,7 @@ def get_weapon_cfg(weapon_id: str) -> dict:
 
 
 def get_bullet_cfg(bullet_id: str) -> dict:
+    """读取并规范化 get_bullet_cfg 所需的战斗配置。"""
     if bullet_id in BULLET_DB:
         return BULLET_DB[bullet_id]
 
@@ -59,10 +60,12 @@ def get_bullet_cfg(bullet_id: str) -> dict:
 
 
 def get_weapon_bullet_id(weapon_cfg: dict) -> str:
+    """读取并规范化 get_weapon_bullet_id 所需的战斗配置。"""
     return str(weapon_cfg.get("bullet_id", DEFAULT_BULLET_ID))
 
 
 def resolve_visual_id(bullet_id: str, bullet_cfg: dict) -> str:
+    """读取并规范化 resolve_visual_id 所需的战斗配置。"""
     return str(bullet_cfg.get("visual_id", bullet_id))
 
 
