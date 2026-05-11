@@ -343,6 +343,11 @@ class RoomLifecycleMixin:
             session.room_id = None
             session.client_id = None
 
+        # JOIN 不存在的房间直接拒绝，防止用 JOIN 变相创建房间
+        is_create_host = requested_client_id == "CREATE_HOST"
+        if not is_create_host and room_id not in self.room_states:
+            raise GsRequestError("ROOM_NOT_FOUND")
+
         room_state = self.get_or_create_room_state(room_id, "Client1")
         players = room_state["players"]
         room_status = str(room_state.get("status", "WAITING"))
@@ -607,5 +612,6 @@ class RoomLifecycleMixin:
             if remaining_players:
                 remaining_players.sort(key=lambda p: int(p["slotNo"]))
                 room_state["hostClientId"] = remaining_players[0]["clientId"]
-            else:
-                self.room_states.pop(room_id, None)  # 无人房间直接删除
+        # 不管谁离开，只要 players 空了就删除房间（防止幽灵房间残留）
+        if not room_state["players"]:
+            self.room_states.pop(room_id, None)

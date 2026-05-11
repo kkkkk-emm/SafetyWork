@@ -616,6 +616,15 @@ class RelayServer(
                     "players", {}
                 ):
                     room_state["players"].pop(client_id, None)
+                    # 房主重连超时 → host 顺延给剩余 slot 最小的玩家
+                    if room_state.get("hostClientId") == client_id:
+                        remaining = list(room_state["players"].values())
+                        if remaining:
+                            remaining.sort(key=lambda p: int(p["slotNo"]))
+                            room_state["hostClientId"] = remaining[0]["clientId"]
+                    # 房间空就删除，避免幽灵房间残留
+                    if not room_state["players"]:
+                        self.room_states.pop(room_id, None)
             # 清理 sessionId 映射
             self.sessions_by_id.pop(sid, None)
             if old_session.user_id is not None:
