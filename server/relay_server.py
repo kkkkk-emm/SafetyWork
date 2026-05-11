@@ -192,12 +192,15 @@ class RelayServer(
         if msg_type == TYPE_GS_AUTH:
             if session.authenticated:
                 print(
-                    f"[GS_AUTH_DUP] already authenticated "
-                    f"userId={getattr(session, 'user_id', None)} "
-                    f"client={getattr(session, 'client_id', None)} "
-                    f"sessionId={getattr(session, 'session_id', None)}"
+                    f"[GS_AUTH_RENEW_REQ] "
+                    f"oldSessionId={getattr(session, 'session_id', None)} "
+                    f"client={getattr(session, 'client_id', None)}"
                 )
-                return
+
+                await self.invalidate_current_session(
+                    websocket,
+                    reason="renew_gs_auth",
+                )
 
             await self.run_with_error_response(
                 websocket,
@@ -1234,7 +1237,56 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
     # Cleanup / utils
     # ═══════════════════════════════════════════════════════════════
+    async def invalidate_current_session(
+    self,
+    websocket: Any,
+    reason: str = "invalidate",
+) -> None:
+        """
+        废弃当前 websocket 上的旧 session，但不关闭 websocket。
+        用于同一个连接重新 GS_AUTH，重新申请 sessionId。
+        """
+        old_session = self.sessions.get(websocket)
 
+        if old_session is None:
+            self.sessions[websocket] = ClientSession()
+            return
+
+        old_room_id = old_session.room_id
+        old_client_id = old_session.client_id
+        old_session_id = old_session.session_id
+
+        if old_room_id:
+            try:
+                await self.remove_player_from_room_state(websocket, old_room_id)
+            except Exception as exc:
+                print(
+                    f"[SESSION INVALIDATE WARN] "
+                    f"remove_player_from_room_state failed: {exc}"
+                )
+
+            self.remove_from_room(websocket, old_room_id)
+
+            try:
+                await self.broadcast_room_state(old_room_id)
+            except Exception as exc:
+                print(
+                    f"[SESSION INVALIDATE WARN] "
+                    f"broadcast_room_state failed: {exc}"
+                )
+
+        if old_session_id:
+            self.sessions_by_id.pop(old_session_id, None)
+            self.reconnect_grace.pop(old_session_id, None)
+
+        self.sessions[websocket] = ClientSession()
+
+        print(
+            f"[SESSION INVALIDATED] reason={reason} "
+            f"oldSessionId={old_session_id} "
+            f"oldClient={old_client_id} "
+            f"oldRoom={old_room_id}"
+        )
     async def cleanup_client(self, websocket: Any, reason: str) -> None:
         """处理 RelayServer.cleanup_client 相关的 GS 中继服务流程。"""
         session = self.sessions.get(websocket)
