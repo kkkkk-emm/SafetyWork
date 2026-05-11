@@ -24,7 +24,6 @@ from game_config import (
     MOVE_SPEED,
     RECONNECT_GRACE_SECONDS,
     SIM_DT,
-    TYPE_CHAT,
     TYPE_LEAVE_ROOM,
     WEAPON_DB,
     KNOCKBACK_DRAG_X,
@@ -265,9 +264,6 @@ class RelayServer(
         elif msg_type == TYPE_INPUT:
             # 处理输入请求
             await self.handle_input(websocket, data)
-        elif msg_type == TYPE_CHAT:
-            # 处理聊天请求
-            await self.handle_chat(websocket, data)
         elif msg_type == TYPE_LEAVE_ROOM:
             # 处理离开房间请求
             await self.handle_leave_room(websocket, data)
