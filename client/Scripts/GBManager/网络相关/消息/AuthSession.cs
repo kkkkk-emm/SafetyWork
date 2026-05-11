@@ -39,8 +39,10 @@ public class AuthSession : MonoBehaviour
         DontDestroyOnLoad(gameObject);
 
         EnsureClientId();
-    }
 
+        // 不要在这里 AuthSessionPersistence.Load();
+        // 因为你希望玩家必须先登录。
+    }
     // ------------------------------------------------------------
     // ClientId
     // ------------------------------------------------------------
@@ -213,5 +215,9 @@ public class AuthSession : MonoBehaviour
     {
         context.ClearAll();
         EnsureClientId();
+    }
+    private void OnApplicationQuit()
+    {
+        AuthSessionPersistence.Save();
     }
 }

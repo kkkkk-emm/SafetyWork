@@ -426,7 +426,9 @@ public class AuthClient : MonoBehaviour
                 expMs: result.exp,
                 loginGen: result.loginGen
             );
+            Debug.Log($"[UserInfoPanel] ShowUser userId={result.userId}, username={result.username}, instance={UserInfoPanel.Instance}");
 
+            UserInfoPanel.Instance?.ShowUser(result.userId, result.username);
             DebugAuth(
                 $"LOGIN ok userId={result.userId}, username={result.username}, " +
                 $"tgt=set, kcTgs=set, exp={result.exp}, loginGen={result.loginGen}"
