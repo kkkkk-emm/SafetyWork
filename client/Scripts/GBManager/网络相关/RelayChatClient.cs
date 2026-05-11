@@ -37,7 +37,8 @@ public class RelayChatClient : MonoBehaviour
     [SerializeField] private int jitterMs = 20;
     [SerializeField, Range(0f, 1f)] private float outgoingDropRate = 0f;
     [SerializeField, Range(0f, 1f)] private float incomingDropRate = 0f;
-
+    [Header("Payload 加密策略")]
+    [SerializeField] private bool encryptInputPayload = false;
     public string ClientId => clientId;
     public string RoomId => roomId;
 
@@ -61,10 +62,16 @@ public class RelayChatClient : MonoBehaviour
     private bool hasJoinedRoom;
     private bool gsAuthInFlight;
 
+
+    private bool reconnectInFlight;
+    private bool reconnectOk;
+    private string reconnectError;
     private int sentInputCount;
     private int latestAppliedAck = -1;
     private int latestAppliedTick = -1;
-
+    private bool forceApplyNextSnapshot;
+    private bool gameOverHandledFromSnapshot = false;
+    private bool waitingFreshSnapshotAfterReconnect;
     // ============================================================
     // Message / Payload classes
     // ============================================================
@@ -80,7 +87,7 @@ public class RelayChatClient : MonoBehaviour
         public string auth;
         public string payload;
         public string error;
-
+        public bool payloadEncrypted;
         public string targetId;
         public string fromClientId;
         public string text;
@@ -170,6 +177,41 @@ public class RelayChatClient : MonoBehaviour
 
         public string equippedWeaponId;
         public string[] equippedEffectIds;
+    }
+    [Serializable]
+    private class ReconnectAuthPayload
+    {
+        public string type;
+        public string clientId;
+        public string sessionId;
+        public string roomId;
+        public long ts;
+        public string nonce;
+    }
+
+    [Serializable]
+    private class ReconnectPayload
+    {
+        public string type;
+        public string clientId;
+        public string sessionId;
+        public string roomId;
+        public string nonce;
+        public int lastProcessedSeq;
+        public long ts;
+    }
+
+    [Serializable]
+    private class ReconnectRepPayload
+    {
+        public string type;
+        public bool ok;
+        public string sessionId;
+        public string roomId;
+        public string phase;
+        public int lastProcessedSeq;
+        public long ts;
+        public string nonce;
     }
 
     // ============================================================
@@ -644,34 +686,91 @@ public class RelayChatClient : MonoBehaviour
 
     public async Task LeaveRoom()
     {
+        string leavingRoomId = roomId;
+
         if (!EnsureSocketOpen())
         {
-            hasJoinedRoom = false;
+            ClearLocalRoomState();
+            ClearGsSessionForRenew();
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(roomId))
+        if (string.IsNullOrWhiteSpace(leavingRoomId))
         {
-            hasJoinedRoom = false;
+            ClearLocalRoomState();
+            ClearGsSessionForRenew();
             return;
         }
+
+        if (string.IsNullOrWhiteSpace(AuthSession.Ctx.sessionId))
+        {
+            Debug.LogWarning("[RelayChatClient] LEAVE_ROOM skipped: sessionId empty.");
+
+            ClearLocalRoomState();
+            ClearGsSessionForRenew();
+            return;
+        }
+
+        string encryptedAuth = EncryptRoomAuth("LEAVE_ROOM", leavingRoomId);
 
         var leave = new NetMessage
         {
             type = "LEAVE_ROOM",
             sessionId = AuthSession.Ctx.sessionId,
-            roomId = roomId,
-            payload = "{}"
+            roomId = leavingRoomId,
+            auth = encryptedAuth,
+            payload = ""
         };
 
         await SendJson(leave, bypassSimulation: false);
 
-        hasJoinedRoom = false;
+        if (debugNetworkLog)
+        {
+            Debug.Log(
+                $"[{clientId}] SEND LEAVE_ROOM " +
+                $"room={leavingRoomId}, sessionId={AuthSession.Ctx.sessionId}"
+            );
+        }
+
+        ClearLocalRoomState();
+
+        // 关键：主动 Back / 取消房间后，不再复用旧 GS sessionId。
+        // 下次创建/加入房间时，让 EnsureGsReady() 重新 GS_AUTH。
+        ClearGsSessionForRenew();
+    }
+    private void ClearGsSessionForRenew()
+    {
+        AuthSession.EnsureExists();
+
+        AuthContext ctx = AuthSession.Ctx;
+
+        if (ctx == null)
+        {
+            Debug.LogWarning("[RelayChatClient] ClearGsSessionForRenew failed: AuthSession.Ctx is null.");
+            return;
+        }
+
+        string oldSessionId = ctx.sessionId;
+
+        // 只清 GS session，不清 serviceTicket / kcGs
+        // 这样下次还能用现有登录票据重新 GS_AUTH
+        ctx.sessionId = "";
+        ctx.gsSessionExpireAtMs = 0;
+
+        gsAuthInFlight = false;
+
+        if (NetworkSession.Instance != null)
+            NetworkSession.Instance.ApplyGsSession("");
 
         if (debugNetworkLog)
-            Debug.Log($"[{clientId}] SEND LEAVE_ROOM room={roomId}");
-    }
+        {
+            Debug.Log(
+                $"[RelayChatClient] ClearGsSessionForRenew oldSessionId={oldSessionId}"
+            );
+        }
 
+        AuthSessionPersistence.Save();
+    }
     public async Task SendChat(string messageText)
     {
         if (string.IsNullOrWhiteSpace(messageText))
@@ -777,14 +876,28 @@ public class RelayChatClient : MonoBehaviour
             equippedEffectIds = cmd.equippedEffectIds
         };
 
-        string encryptedPayload = EncryptWithKcGs(payload);
+        // 高频 INPUT 默认明文，避免每帧 DES 加密/解密导致延迟。
+        // 如果以后要演示 INPUT 加密，可以把这个改成 true。
+        bool payloadEncrypted = encryptInputPayload;
+
+        string payloadText;
+
+        if (payloadEncrypted)
+        {
+            payloadText = EncryptWithKcGs(payload);
+        }
+        else
+        {
+            payloadText = JsonUtility.ToJson(payload);
+        }
 
         var msg = new NetMessage
         {
             type = "INPUT",
             sessionId = AuthSession.Ctx.sessionId,
             roomId = roomId,
-            payload = encryptedPayload
+            payloadEncrypted = payloadEncrypted,
+            payload = payloadText
         };
 
         sentInputCount++;
@@ -794,7 +907,9 @@ public class RelayChatClient : MonoBehaviour
         {
             Debug.Log(
                 $"[{clientId}] SEND INPUT #{sentInputCount} " +
-                $"seq={cmd.seq} tick={cmd.tick} encryptedPayloadLen={encryptedPayload.Length}"
+                $"seq={cmd.seq} tick={cmd.tick} " +
+                $"payloadEncrypted={payloadEncrypted} " +
+                $"payloadLen={payloadText.Length}"
             );
         }
 
@@ -957,7 +1072,9 @@ public class RelayChatClient : MonoBehaviour
             case "GS_AUTH_OK":
                 HandleGsAuthOk(msg);
                 return;
-
+            case "RECONNECT_REP":
+                HandleReconnectRep(msg);
+                return;
             case "ROOM_CREATE_REP":
                 HandleRoomCreateRep(msg);
                 return;
@@ -993,7 +1110,7 @@ public class RelayChatClient : MonoBehaviour
                 return;
 
             case "ERROR":
-                Debug.LogError($"[{clientId}] SERVER ERROR: {msg.error}");
+                HandleServerError(msg);
                 return;
 
             default:
@@ -1041,8 +1158,88 @@ public class RelayChatClient : MonoBehaviour
                 $"[RelayChatClient] RECV GS_AUTH_OK sessionId={newSessionId}, exp={exp}"
             );
         }
+        AuthSessionPersistence.Save();
     }
+    private void HandleReconnectRep(NetMessage msg)
+    {
+        try
+        {
+            string payloadJson = DecryptWithKcGs(msg.payload, "RECONNECT_REP");
+            ReconnectRepPayload payload = JsonUtility.FromJson<ReconnectRepPayload>(payloadJson);
 
+            if (debugNetworkLog)
+                Debug.Log($"[RelayChatClient] RECONNECT_REP payload={payloadJson}");
+
+            if (payload == null || !payload.ok)
+            {
+                reconnectError = "RECONNECT_REP_NOT_OK";
+                reconnectOk = false;
+                return;
+            }
+
+            string newSessionId = !string.IsNullOrWhiteSpace(msg.sessionId)
+                ? msg.sessionId
+                : payload.sessionId;
+
+            string newRoomId = !string.IsNullOrWhiteSpace(msg.roomId)
+                ? msg.roomId
+                : payload.roomId;
+
+            if (!string.IsNullOrWhiteSpace(newSessionId))
+                AuthSession.EnsureExists().ApplyGsAuthOk(newSessionId, payload.ts);
+
+            if (!string.IsNullOrWhiteSpace(newRoomId))
+                roomId = newRoomId.Trim().ToUpper();
+
+            AuthContext ctx = AuthSession.Ctx;
+
+            if (!string.IsNullOrWhiteSpace(ctx.localClientId))
+                clientId = ctx.localClientId;
+
+            hasJoinedRoom =
+                !string.IsNullOrWhiteSpace(roomId) &&
+                !string.IsNullOrWhiteSpace(clientId);
+            ResetLocalPredictionForReconnect();
+            forceApplyNextSnapshot = true;
+            if (NetworkSession.Instance != null)
+            {
+                NetworkSession.Instance.roomId = roomId;
+                NetworkSession.Instance.clientId = clientId;
+                NetworkSession.Instance.ApplyGsSession(AuthSession.Ctx.sessionId);
+            }
+
+            reconnectOk = true;
+            reconnectError = "";
+
+            if (debugNetworkLog)
+            {
+                Debug.Log(
+                    $"[RelayChatClient] RECONNECT OK " +
+                    $"room={roomId}, client={clientId}, joined={hasJoinedRoom}, " +
+                    $"sessionId={AuthSession.Ctx.sessionId}"
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            reconnectOk = false;
+            reconnectError = ex.Message;
+            Debug.LogError("[RelayChatClient] RECONNECT_REP parse/decrypt failed: " + ex);
+        }
+    }
+    private void ResetLocalPredictionForReconnect()
+    {
+        latestAppliedAck = -1;
+        latestAppliedTick = -1;
+        sentInputCount = 0;
+
+        // 如果你项目里有缓存列表，在这里 Clear：
+        // pendingInputs.Clear();
+        // snapshotBuffer.Clear();
+        // inputHistory.Clear();
+
+        Debug.Log("[RelayChatClient] Reconnect reset local prediction/cache.");
+    }
     private void HandleRoomCreateRep(NetMessage msg)
     {
         try
@@ -1057,6 +1254,7 @@ public class RelayChatClient : MonoBehaviour
 
             if (!string.IsNullOrWhiteSpace(msg.roomId))
                 roomId = msg.roomId.Trim().ToUpper();
+            AuthSessionPersistence.Save();
         }
         catch (Exception ex)
         {
@@ -1127,6 +1325,10 @@ public class RelayChatClient : MonoBehaviour
             return;
 
         ApplyRoomStateToClient(state, "ROOM_STATE");
+        Debug.Log(
+            $"[RelayChatClient] Invoke OnRoomStateReceived " +
+            $"room={state.roomId}, local={state.localClientId}, slot={state.localSlotNo}"
+        );
         OnRoomStateReceived?.Invoke(state);
 
         if (debugNetworkLog)
@@ -1190,12 +1392,26 @@ public class RelayChatClient : MonoBehaviour
 
         try
         {
-            string payloadJson = DecryptWithKcGs(msg.payload, "SNAPSHOT");
+            string payloadJson;
+
+            if (msg.payloadEncrypted)
+            {
+                payloadJson = DecryptWithKcGs(msg.payload, "SNAPSHOT");
+            }
+            else
+            {
+                payloadJson = msg.payload;
+            }
+
             snapshot = JsonUtility.FromJson<MatchSnapshot>(payloadJson);
         }
         catch (Exception ex)
         {
-            Debug.LogError($"[{clientId}] 解析 SNAPSHOT payload 失败: {ex.Message}\nPayload={msg.payload}");
+            Debug.LogError(
+                $"[{clientId}] 解析 SNAPSHOT payload 失败: {ex.Message}\n" +
+                $"payloadEncrypted={msg.payloadEncrypted}\n" +
+                $"Payload={msg.payload}"
+            );
             return;
         }
 
@@ -1206,16 +1422,82 @@ public class RelayChatClient : MonoBehaviour
         {
             Debug.Log(
                 $"[{clientId}] SNAPSHOT RAW tick={snapshot.tick} ack={snapshot.lastProcessedSeq} " +
+                $"encrypted={msg.payloadEncrypted} " +
                 $"players={(snapshot.players != null ? snapshot.players.Length : 0)} " +
                 $"projectiles={(snapshot.projectiles != null ? snapshot.projectiles.Length : 0)} " +
                 $"events={(snapshot.events != null ? snapshot.events.Length : 0)} " +
                 $"reject={snapshot.rejectReason}"
             );
         }
+        if (forceApplyNextSnapshot)
+        {
+            forceApplyNextSnapshot = false;
 
+            latestAppliedTick = -1;
+            latestAppliedAck = -1;
+
+            Debug.Log(
+                $"[{clientId}] Force apply first SNAPSHOT after reconnect. " +
+                $"snapshotTick={snapshot.tick}, ack={snapshot.lastProcessedSeq}"
+            );
+        }
         await DispatchSnapshotWithSimulation(snapshot);
+        CheckGameOverFromSnapshot(snapshot);
     }
+    private void CheckGameOverFromSnapshot(MatchSnapshot snapshot)
+    {
+        if (gameOverHandledFromSnapshot)
+            return;
 
+        if (snapshot == null || snapshot.players == null || snapshot.players.Length <= 0)
+            return;
+
+        string loserClientId = "";
+        string winnerClientId = "";
+
+        foreach (var player in snapshot.players)
+        {
+            if (player == null)
+                continue;
+
+            if (player.stocks <= 0)
+            {
+                loserClientId = player.clientId;
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(loserClientId))
+            return;
+
+        foreach (var player in snapshot.players)
+        {
+            if (player == null)
+                continue;
+
+            if (player.clientId != loserClientId && player.stocks > 0)
+            {
+                winnerClientId = player.clientId;
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(winnerClientId))
+        {
+            winnerClientId = loserClientId == "Client1"
+                ? "Client2"
+                : "Client1";
+        }
+
+        gameOverHandledFromSnapshot = true;
+
+        Debug.Log(
+            $"[RelayChatClient] GAME OVER from SNAPSHOT. " +
+            $"winner={winnerClientId}, loser={loserClientId}, tick={snapshot.tick}"
+        );
+
+        GameManager.Instance?.ShowGameOverFromNetwork(winnerClientId);
+    }
     private void HandleResult(NetMessage msg)
     {
         try
@@ -1366,12 +1648,103 @@ public class RelayChatClient : MonoBehaviour
             );
         }
     }
+    public async System.Threading.Tasks.Task DisconnectForReconnectToSameMatch()
+    {
+        Debug.Log("[RelayChatClient] DisconnectForReconnectToSameMatch");
 
+        // 关键：中途回大厅前，保存当前可重连信息。
+        // 这里必须在清理/断开之前保存。
+        AuthSessionPersistence.Save();
+
+        await DisconnectButKeepSession();
+
+        // 注意：这里不要清 roomId / sessionId / localClientId。
+        // 这些字段是重连需要的。
+    }
+    public async System.Threading.Tasks.Task<bool> EnsureGsReady()
+    {
+        await EnsureConnected();
+
+        if (!EnsureSocketOpen())
+            return false;
+
+        if (AuthSession.Ctx.HasGsSession)
+        {
+            if (debugNetworkLog)
+            {
+                Debug.Log(
+                    $"[RelayChatClient] EnsureGsReady: reuse GS sessionId={AuthSession.Ctx.sessionId}"
+                );
+            }
+
+            return true;
+        }
+
+        Debug.Log("[RelayChatClient] EnsureGsReady: need GS_AUTH.");
+
+        bool ok = await ConnectAndAuthenticateGs();
+
+        if (!ok || !AuthSession.Ctx.HasGsSession)
+        {
+            Debug.LogWarning("[RelayChatClient] EnsureGsReady failed.");
+            return false;
+        }
+
+        Debug.Log(
+            $"[RelayChatClient] EnsureGsReady OK. sessionId={AuthSession.Ctx.sessionId}"
+        );
+
+        return true;
+    }
+    public async System.Threading.Tasks.Task DisconnectAfterMatchFinished()
+    {
+        Debug.Log("[RelayChatClient] DisconnectAfterMatchFinished");
+
+        await DisconnectButKeepSession();
+
+        // 这局已经结束，清掉旧房间和旧 GS session。
+        // 保留 AS/TGS 登录态，这样用户不需要重新输入账号密码。
+        AuthContext ctx = AuthSession.Ctx;
+
+        ctx.sessionId = "";
+        ctx.gsSessionExpireAtMs = 0;
+
+        ctx.roomId = "";
+        ctx.localClientId = "";
+        ctx.localSlotNo = -1;
+        ctx.localIsHost = false;
+
+        if (NetworkSession.Instance != null)
+            NetworkSession.Instance.Clear();
+
+        hasJoinedRoom = false;
+        roomId = "";
+        clientId = "";
+
+        Debug.Log("[RelayChatClient] Cleared finished match state.");
+    }
+    private void ResetRuntimeStateForNewMatch()
+    {
+        latestAppliedAck = -1;
+        latestAppliedTick = -1;
+        sentInputCount = 0;
+
+        gameOverHandledFromSnapshot = false;
+        forceApplyNextSnapshot = true;
+        waitingFreshSnapshotAfterReconnect = false;
+
+        reconnectInFlight = false;
+        reconnectOk = false;
+        reconnectError = "";
+
+        Debug.Log("[RelayChatClient] Reset runtime state for new match.");
+    }
     private void ApplyGameStartToClient(GameStartPayload start)
     {
         if (start == null)
             return;
-
+        ResetRuntimeStateForNewMatch();
+        gameOverHandledFromSnapshot = false;
         roomId = start.roomId;
 
         if (!string.IsNullOrWhiteSpace(start.localClientId))
@@ -1485,6 +1858,190 @@ public class RelayChatClient : MonoBehaviour
 
         ClientReceiver.Instance?.OnReceiveSnapshot(snapshot);
     }
+    public async System.Threading.Tasks.Task DisconnectButKeepSession()
+    {
+        if (websocket == null)
+            return;
+
+        try
+        {
+            var oldSocket = websocket;
+
+            if (oldSocket.State == NativeWebSocket.WebSocketState.Open ||
+                oldSocket.State == NativeWebSocket.WebSocketState.Connecting)
+            {
+                await oldSocket.Close();
+            }
+
+            int waitMs = 0;
+            while (oldSocket.State != NativeWebSocket.WebSocketState.Closed && waitMs < 1000)
+            {
+                await System.Threading.Tasks.Task.Delay(50);
+                waitMs += 50;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning("[RelayChatClient] DisconnectButKeepSession failed: " + ex.Message);
+        }
+
+        websocket = null;
+        hasJoinedRoom = false;
+
+        Debug.Log("[RelayChatClient] DisconnectButKeepSession done. AuthSession kept.");
+    }
+    public async Task<bool> ReconnectToGameAsync(int timeoutMs = 5000)
+    {
+        if (reconnectInFlight)
+        {
+            Debug.LogWarning("[RelayChatClient] Reconnect already in flight.");
+            return false;
+        }
+
+        ApplyNetworkSessionToLocalFields();
+
+        AuthContext ctx = AuthSession.Ctx;
+
+        if (!ctx.HasServiceTicket)
+        {
+            Debug.LogWarning("[RelayChatClient] Reconnect failed: missing serviceTicket/kcGs.");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(ctx.sessionId))
+        {
+            Debug.LogWarning("[RelayChatClient] Reconnect failed: missing sessionId.");
+            return false;
+        }
+
+        string reconnectRoomId = !string.IsNullOrWhiteSpace(roomId)
+            ? roomId
+            : ctx.roomId;
+
+        string reconnectClientId = !string.IsNullOrWhiteSpace(clientId)
+            ? clientId
+            : ctx.localClientId;
+
+        if (string.IsNullOrWhiteSpace(reconnectRoomId))
+        {
+            Debug.LogWarning("[RelayChatClient] Reconnect failed: missing roomId.");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(reconnectClientId))
+        {
+            Debug.LogWarning("[RelayChatClient] Reconnect failed: missing localClientId.");
+            return false;
+        }
+
+        reconnectInFlight = true;
+        reconnectOk = false;
+        reconnectError = "";
+
+        try
+        {
+            await EnsureConnected();
+
+            if (!EnsureSocketOpen())
+            {
+                Debug.LogWarning("[RelayChatClient] Reconnect failed: socket not open.");
+                return false;
+            }
+
+            await SendReconnectReq(reconnectRoomId, reconnectClientId);
+
+            int elapsed = 0;
+
+            while (elapsed < timeoutMs)
+            {
+                if (reconnectOk)
+                    return true;
+
+                if (!string.IsNullOrWhiteSpace(reconnectError))
+                {
+                    Debug.LogWarning("[RelayChatClient] Reconnect failed: " + reconnectError);
+                    return false;
+                }
+
+                await Task.Delay(50);
+                elapsed += 50;
+            }
+
+            Debug.LogWarning("[RelayChatClient] Reconnect timeout.");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError("[RelayChatClient] Reconnect exception: " + ex);
+            return false;
+        }
+        finally
+        {
+            reconnectInFlight = false;
+        }
+    }
+    private async Task SendReconnectReq(string reconnectRoomId, string reconnectClientId)
+    {
+        AuthContext ctx = AuthSession.Ctx;
+
+        if (!AuthSession.EnsureExists().ValidateGsTicketReady())
+            throw new InvalidOperationException("ServiceTicket/KcGs not ready.");
+
+        if (string.IsNullOrWhiteSpace(ctx.sessionId))
+            throw new InvalidOperationException("sessionId missing.");
+
+        if (string.IsNullOrWhiteSpace(reconnectRoomId))
+            throw new InvalidOperationException("roomId missing.");
+
+        if (string.IsNullOrWhiteSpace(reconnectClientId))
+            throw new InvalidOperationException("localClientId missing.");
+
+        long ts = ClientCrypto.NowMs();
+        string nonce = ClientCrypto.GenerateNonce();
+
+        var authPayload = new ReconnectAuthPayload
+        {
+            type = "RECONNECT_REQ",
+            clientId = ctx.clientId,
+            sessionId = ctx.sessionId,
+            roomId = reconnectRoomId,
+            ts = ts,
+            nonce = nonce
+        };
+
+        var payload = new ReconnectPayload
+        {
+            type = "RECONNECT_REQ",
+            clientId = ctx.clientId,
+            sessionId = ctx.sessionId,
+            roomId = reconnectRoomId,
+            nonce = nonce,
+            lastProcessedSeq = latestAppliedAck,
+            ts = ts
+        };
+
+        var msg = new NetMessage
+        {
+            type = "RECONNECT_REQ",
+            clientId = ctx.clientId,
+            sessionId = ctx.sessionId,
+            roomId = reconnectRoomId,
+            ticket = ctx.serviceTicket,
+            auth = EncryptWithKcGs(authPayload),
+            payload = EncryptWithKcGs(payload)
+        };
+
+        await SendJson(msg, bypassSimulation: true);
+
+        if (debugNetworkLog)
+        {
+            Debug.Log(
+                $"[RelayChatClient] SEND RECONNECT_REQ " +
+                $"authClientId={ctx.clientId}, localClient={reconnectClientId}, " +
+                $"room={reconnectRoomId}, sessionId={ctx.sessionId}, lastAck={latestAppliedAck}"
+            );
+        }
+    }
 
     private int GetSimulatedDelay(int baseDelayMs, int jitterRangeMs)
     {
@@ -1504,6 +2061,86 @@ public class RelayChatClient : MonoBehaviour
 
         if (debugNetworkLog)
             Debug.Log("[RelayChatClient] ClearLocalRoomState done.");
+    }
+    private void HandleServerError(NetMessage msg)
+    {
+        string error = msg.error ?? "";
+
+        Debug.LogError($"[{clientId}] SERVER ERROR: {error}");
+
+        switch (error)
+        {
+            case "ACCOUNT_LOGGED_IN_ELSEWHERE":
+            case "SESSION_REPLACED":
+                GameAlert.Show(
+                    "账号已在其他设备登录",
+                    "你的账号刚刚在另一台设备登录，本客户端会退出到登录页。",
+                    "确定",
+                    async () =>
+                    {
+                        await DisconnectAfterMatchFinished();
+                        AuthSession.EnsureExists().ClearAll();
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+                    }
+                );
+                break;
+
+            case "AUTH_EXPIRED":
+                GameAlert.Show(
+                    "登录已过期",
+                    "你的登录状态已经过期，请重新登录。",
+                    "重新登录",
+                    async () =>
+                    {
+                        await DisconnectAfterMatchFinished();
+                        AuthSession.EnsureExists().ClearAll();
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+                    }
+                );
+                break;
+
+            case "RECONNECT_EXPIRED":
+                GameAlert.Show(
+                    "重连失败",
+                    "当前对局的重连时间已过，请返回大厅。",
+                    "返回大厅",
+                    async () =>
+                    {
+                        await DisconnectAfterMatchFinished();
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+                    }
+                );
+                break;
+
+            case "NOT_AUTHENTICATED":
+                GameAlert.Show(
+                    "连接未认证",
+                    "服务器连接状态已失效，请重新进入房间。",
+                    "确定"
+                );
+                break;
+
+            case "ROOM_MISMATCH":
+                GameAlert.Show(
+                    "房间状态异常",
+                    "当前房间信息不一致，请返回大厅后重新加入。",
+                    "返回大厅",
+                    async () =>
+                    {
+                        await DisconnectAfterMatchFinished();
+                        UnityEngine.SceneManagement.SceneManager.LoadScene("MainMenu");
+                    }
+                );
+                break;
+
+            default:
+                GameAlert.Show(
+                    "服务器错误",
+                    $"错误信息：{error}",
+                    "确定"
+                );
+                break;
+        }
     }
     // ============================================================
     // Context menu

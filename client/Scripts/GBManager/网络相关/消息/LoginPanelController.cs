@@ -13,7 +13,7 @@ public class LoginPanelController : MonoBehaviour
     [SerializeField] private GameObject loginPanel;
     [SerializeField] private GameObject lobbyPanel;
 
-    [Header("µÇÂ¼/×¢²á±íµ¥")]
+    [Header("µÇÂ¼ / ×¢²á±íµ¥")]
     [SerializeField] private GameObject loginForm;
     [SerializeField] private GameObject registerForm;
 
@@ -91,11 +91,7 @@ public class LoginPanelController : MonoBehaviour
         if (authClient == null)
             authClient = FindFirstObjectByType<AuthClient>();
 
-        if (relayClient == null)
-            relayClient = RelayChatClient.Instance;
-
-        if (relayClient == null)
-            relayClient = FindFirstObjectByType<RelayChatClient>();
+        RefreshRelayClientReference();
 
         PreparePanelCanvasGroups();
         PrepareFormCanvasGroups();
@@ -112,7 +108,17 @@ public class LoginPanelController : MonoBehaviour
             SetPanelInstant(lobbyPanel, lobbyCanvasGroup, false);
         }
 
-        ShowLoginFormInstant();
+        if (IsAlreadyLoggedIn())
+        {
+            UserInfoPanel.ShowUserIfExists(
+     AuthSession.Ctx.userId,
+     AuthSession.Ctx.username
+ );
+        }
+        else
+        {
+            ShowLoginFormInstant();
+        }
 
         HideStatus();
         RefreshButtons();
@@ -139,6 +145,22 @@ public class LoginPanelController : MonoBehaviour
     {
         busy = false;
         HideStatus();
+
+        RefreshRelayClientReference();
+
+        if (IsAlreadyLoggedIn())
+        {
+            Debug.Log("[LoginPanel] Already logged in, open lobby.");
+
+            UserInfoPanel.ShowUserIfExists(
+      AuthSession.Ctx.userId,
+      AuthSession.Ctx.username
+  );
+
+            RefreshButtons();
+            ShowLobby();
+            return;
+        }
 
         ShowLoginFormInstant();
         RefreshButtons();
@@ -206,6 +228,14 @@ public class LoginPanelController : MonoBehaviour
         });
     }
 
+    public void OnClickBackToLogin()
+    {
+        busy = false;
+        HideStatus();
+        ShowLoginFormInstant();
+        ShowLogin();
+    }
+
     // ============================================================
     // µÇÂ¼ / ×¢²á Tab
     // ============================================================
@@ -269,7 +299,7 @@ public class LoginPanelController : MonoBehaviour
         SetFormInstant(loginForm, loginFormGroup, true);
         SetFormInstant(registerForm, registerFormGroup, false);
 
-        ApplyTabVisual();
+        ApplyTabVisualNoTween();
         RefreshButtons();
     }
 
@@ -293,7 +323,6 @@ public class LoginPanelController : MonoBehaviour
                 .SetEase(Ease.OutQuad);
         }
 
-        // Tab °´Å¥ÓÀÔ¶±£³Ö¿Éµã£¬±ÜÃâÇÐ»»×´Ì¬ÂÒµô¡£
         if (loginTabButton != null)
             loginTabButton.interactable = !busy;
 
@@ -366,6 +395,8 @@ public class LoginPanelController : MonoBehaviour
             return;
         }
 
+        RefreshRelayClientReference();
+
         if (relayClient == null)
         {
             SetError("µÇÂ¼Ê§°Ü£ºÕÒ²»µ½ RelayChatClient¡£");
@@ -409,8 +440,12 @@ public class LoginPanelController : MonoBehaviour
 
         SetBusy(false);
         SetSuccess("µÇÂ¼³É¹¦¡£");
+        UserInfoPanel.ShowUserIfExists(
+            AuthSession.Ctx.userId,
+            AuthSession.Ctx.username
+        );
 
-        //ShowLobby();
+        ShowLobby();
     }
 
     // ============================================================
@@ -824,6 +859,34 @@ public class LoginPanelController : MonoBehaviour
     }
 
     // ============================================================
+    // µÇÂ¼×´Ì¬ÅÐ¶Ï
+    // ============================================================
+
+    private bool IsAlreadyLoggedIn()
+    {
+        AuthContext ctx = AuthSession.Ctx;
+
+        return ctx != null
+               && ctx.HasTgt
+               && ctx.userId > 0
+               && !string.IsNullOrWhiteSpace(ctx.username);
+    }
+
+    private void RefreshRelayClientReference()
+    {
+        if (relayClient == null)
+            relayClient = RelayChatClient.Instance;
+
+        if (relayClient == null)
+            relayClient = FindFirstObjectByType<RelayChatClient>();
+
+        if (relayClient == null)
+            relayClient = FindAnyObjectByType<RelayChatClient>();
+
+        Debug.Log("[LoginPanel] relayClient = " + relayClient);
+    }
+
+    // ============================================================
     // Lobby debug info
     // ============================================================
 
@@ -844,7 +907,9 @@ public class LoginPanelController : MonoBehaviour
             sessionText.text =
                 $"SessionId£º{ctx.sessionId}\n" +
                 $"TGT£º{(string.IsNullOrWhiteSpace(ctx.tgt) ? "empty" : "set")}\n" +
-                $"ServiceTicket£º{(string.IsNullOrWhiteSpace(ctx.serviceTicket) ? "empty" : "set")}";
+                $"ServiceTicket£º{(string.IsNullOrWhiteSpace(ctx.serviceTicket) ? "empty" : "set")}\n" +
+                $"RoomId£º{ctx.roomId}\n" +
+                $"LocalClient£º{ctx.localClientId}";
         }
     }
 

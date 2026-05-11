@@ -97,7 +97,7 @@ public class LobbyManager : MonoBehaviour
 
     private Sequence joinPanelSeq;
     private Vector3 joinPanelOriginalScale = Vector3.one;
-
+    private bool loginAlertShowing;
     private void Awake()
     {
         if (relayClient == null)
@@ -122,6 +122,8 @@ public class LobbyManager : MonoBehaviour
     {
         SubscribeRelayEvents();
         RefreshFromCurrentState();
+
+        UserInfoPanel.ShowCurrentUserIfLoggedIn();
     }
 
     private void OnDisable()
@@ -206,17 +208,29 @@ public class LobbyManager : MonoBehaviour
 
     private void SubscribeRelayEvents()
     {
-        if (relayClient == null)
-            relayClient = RelayChatClient.Instance;
+        RelayChatClient target = RelayChatClient.Instance;
 
-        if (relayClient == null)
-            relayClient = FindFirstObjectByType<RelayChatClient>();
+        if (target == null)
+            target = FindFirstObjectByType<RelayChatClient>();
 
-        if (relayClient == null)
+        if (target == null)
         {
             Debug.LogError("[LobbyManager] SubscribeRelayEvents failed: RelayChatClient not found.");
             return;
         }
+
+        // 如果之前订阅的是旧 RelayClient，先从旧对象退订
+        if (relayClient != null && relayClient != target)
+        {
+            relayClient.OnRoomStateReceived -= HandleRoomState;
+            relayClient.OnGameStartReceived -= HandleGameStart;
+
+            Debug.LogWarning(
+                $"[LobbyManager] RelayClient changed. old={relayClient.name}, new={target.name}"
+            );
+        }
+
+        relayClient = target;
 
         relayClient.OnRoomStateReceived -= HandleRoomState;
         relayClient.OnRoomStateReceived += HandleRoomState;
@@ -224,10 +238,11 @@ public class LobbyManager : MonoBehaviour
         relayClient.OnGameStartReceived -= HandleGameStart;
         relayClient.OnGameStartReceived += HandleGameStart;
 
-        if (debugLog)
-            Debug.Log($"[LobbyManager] Subscribed relay events. relay={relayClient.name}");
+        Debug.Log(
+            $"[LobbyManager] Subscribed relay events. " +
+            $"relay={relayClient.name}, instance={RelayChatClient.Instance?.name}"
+        );
     }
-
     private void PrepareLobbyPanelAnimation()
     {
         if (lobbyPanelRoot == null)
@@ -263,9 +278,12 @@ public class LobbyManager : MonoBehaviour
 
     public void OpenJoinRoomPanel()
     {
-        if (!AuthSession.Ctx.HasGsSession)
+        if (AuthSession.Ctx == null ||
+      string.IsNullOrWhiteSpace(AuthSession.Ctx.serviceTicket) ||
+      string.IsNullOrWhiteSpace(AuthSession.Ctx.kcGs))
         {
             SetStatus("请先登录。");
+            ShowNeedLoginAlert();
             return;
         }
 
@@ -578,8 +596,7 @@ public class LobbyManager : MonoBehaviour
             Debug.LogWarning("[LobbyManager] 创建房间请求正在进行中，忽略重复点击。");
             return;
         }
-
-        if (!EnsureRelayReady())
+        if (!await EnsureRelayReady())
             return;
 
         globalRoomActionInFlight = true;
@@ -621,7 +638,7 @@ public class LobbyManager : MonoBehaviour
             return;
         }
 
-        if (!EnsureRelayReady())
+        if (!await EnsureRelayReady())
             return;
 
         string wantedRoomId = roomCodeInput != null
@@ -659,9 +676,8 @@ public class LobbyManager : MonoBehaviour
 
     public async void OnClickReady()
     {
-        if (!EnsureRelayReady())
+        if (!await EnsureRelayReady())
             return;
-
         if (currentRoomState == null ||
             string.IsNullOrWhiteSpace(currentRoomState.roomId))
         {
@@ -681,7 +697,7 @@ public class LobbyManager : MonoBehaviour
 
     public async void OnClickStartGame()
     {
-        if (!EnsureRelayReady())
+        if (!await EnsureRelayReady())
             return;
 
         bool isHost = IsLocalHost();
@@ -709,32 +725,126 @@ public class LobbyManager : MonoBehaviour
 
     public async void OnClickBackButton()
     {
-        SetStatus("正在退出房间...");
+        Debug.Log("点击返回：取消/退出当前房间...");
 
-        if (relayClient != null)
+        if (globalRoomActionInFlight)
         {
-            await relayClient.LeaveRoom();
-            relayClient.ClearLocalRoomState();
+            Debug.LogWarning("[LobbyManager] 当前房间操作正在进行中，忽略返回点击。");
+            return;
         }
 
-        localReady = false;
-        currentRoomState = null;
+        globalRoomActionInFlight = true;
         pendingOpenLobbyAfterRoomAction = false;
-        globalRoomActionInFlight = false;
 
-        if (NetworkSession.Instance != null)
-            NetworkSession.Instance.ClearRoom();
+        if (backButton != null)
+            backButton.interactable = false;
 
-        AuthSession.EnsureExists().ClearRoom();
+        if (startButton != null)
+            startButton.interactable = false;
 
-        RefreshEmptyLobby();
+        SetStatus("正在退出房间...");
 
-        await PlayLobbyDropUpAndWait();
+        try
+        {
+            if (relayClient == null)
+                relayClient = RelayChatClient.Instance;
 
-        if (mainMenuManager != null)
-            mainMenuManager.OnClickBackToMain();
-        else
-            Debug.LogWarning("[LobbyManager] mainMenuManager 未绑定，无法返回主菜单。");
+            if (relayClient == null)
+                relayClient = FindFirstObjectByType<RelayChatClient>();
+
+            bool hasRoom =
+                currentRoomState != null &&
+                !string.IsNullOrWhiteSpace(currentRoomState.roomId);
+
+            if (!hasRoom &&
+                NetworkSession.Instance != null &&
+                !string.IsNullOrWhiteSpace(NetworkSession.Instance.roomId))
+            {
+                hasRoom = true;
+            }
+
+            if (!hasRoom &&
+                AuthSession.Ctx != null &&
+                !string.IsNullOrWhiteSpace(AuthSession.Ctx.roomId))
+            {
+                hasRoom = true;
+            }
+
+            // 1. 如果当前确实在房间里，通知服务器退出房间
+            if (hasRoom && relayClient != null)
+            {
+                await relayClient.LeaveRoom();
+
+                if (debugLog)
+                    Debug.Log("[LobbyManager] Send LEAVE_ROOM from Back button");
+            }
+
+            // 2. 清理本地 Relay 房间状态
+            if (relayClient != null)
+                relayClient.ClearLocalRoomState();
+
+            // 3. 清理本地 NetworkSession 房间状态
+            if (NetworkSession.Instance != null)
+                NetworkSession.Instance.ClearRoom();
+
+            // 4. 清理 AuthSession 里的房间状态
+            AuthSession.EnsureExists().ClearRoom();
+
+            // 5. 清理 LobbyManager 自己的 UI 状态
+            currentRoomState = null;
+            localReady = false;
+            pendingOpenLobbyAfterRoomAction = false;
+
+            RefreshEmptyLobby();
+
+            // 6. 关闭 Lobby 面板
+            await PlayLobbyDropUpAndWait();
+
+            // 7. 回主菜单动画
+            if (mainMenuManager != null)
+            {
+                mainMenuManager.OnClickBackToMain();
+            }
+            else
+            {
+                Debug.LogWarning("[LobbyManager] mainMenuManager 没有绑定，已只关闭 LobbyPanel。");
+            }
+
+            SetStatus("");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError("[LobbyManager] Back/LeaveRoom failed: " + ex);
+
+            // 网络失败也要允许 UI 回去，避免卡死在房间界面
+            if (relayClient != null)
+                relayClient.ClearLocalRoomState();
+
+            if (NetworkSession.Instance != null)
+                NetworkSession.Instance.ClearRoom();
+
+            AuthSession.EnsureExists().ClearRoom();
+
+            currentRoomState = null;
+            localReady = false;
+            pendingOpenLobbyAfterRoomAction = false;
+
+            RefreshEmptyLobby();
+
+            await PlayLobbyDropUpAndWait();
+
+            if (mainMenuManager != null)
+                mainMenuManager.OnClickBackToMain();
+        }
+        finally
+        {
+            globalRoomActionInFlight = false;
+
+            if (backButton != null)
+                backButton.interactable = true;
+
+            RefreshStartButton();
+        }
     }
 
     // ============================================================
@@ -889,7 +999,35 @@ public class LobbyManager : MonoBehaviour
 
         RemoveMissingCards(aliveClientIds);
     }
+    private void ShowNeedLoginAlert()
+    {
+        if (loginAlertShowing)
+            return;
 
+        loginAlertShowing = true;
+
+        GameAlert.Show(
+            "请先登录",
+            "创建房间或加入房间前，需要先登录账号。",
+            "去登录",
+            () =>
+            {
+                loginAlertShowing = false;
+
+                LoginPanelController loginPanel = FindFirstObjectByType<LoginPanelController>();
+
+                if (loginPanel != null)
+                    loginPanel.OpenLoginPanel();
+                else
+                    Debug.LogWarning("[LobbyManager] LoginPanelController not found.");
+            },
+            "取消",
+            () =>
+            {
+                loginAlertShowing = false;
+            }
+        );
+    }
     private LobbyPlayerCard GetOrCreatePlayerCard(string cardKey, int index)
     {
         if (playerCards.TryGetValue(cardKey, out LobbyPlayerCard existing) &&
@@ -1257,7 +1395,7 @@ public class LobbyManager : MonoBehaviour
         return false;
     }
 
-    private bool EnsureRelayReady()
+    private async Task<bool> EnsureRelayReady()
     {
         if (relayClient == null)
         {
@@ -1273,9 +1411,24 @@ public class LobbyManager : MonoBehaviour
             return false;
         }
 
-        if (!AuthSession.Ctx.HasGsSession)
+        AuthContext ctx = AuthSession.Ctx;
+
+        if (ctx == null ||
+      string.IsNullOrWhiteSpace(ctx.serviceTicket) ||
+      string.IsNullOrWhiteSpace(ctx.kcGs))
         {
-            SetStatus("还没有完成 GS_AUTH，请先登录。");
+            SetStatus("请先登录。");
+            ShowNeedLoginAlert();
+            return false;
+        }
+
+        // 关键：如果结算后回大厅，旧 sessionId 已经清掉，
+        // 这里会自动重新连接 GS 并重新做 GS_AUTH。
+        bool ok = await relayClient.EnsureGsReady();
+
+        if (!ok || !AuthSession.Ctx.HasGsSession)
+        {
+            SetStatus("GS_AUTH 失败，请重新登录或稍后再试。");
             return false;
         }
 

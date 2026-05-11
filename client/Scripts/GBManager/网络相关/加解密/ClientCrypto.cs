@@ -1,8 +1,8 @@
-using System;
+﻿using System;
 using System.Security.Cryptography;
 using System.Text;
 using UnityEngine;
-
+using System.Numerics;
 public static class ClientCrypto
 {
     public const int DesKeyBytes = 8;
@@ -64,9 +64,9 @@ public static class ClientCrypto
     // ============================================================
     // PBKDF2-HMAC-SHA256
     //
-    // Python AS �˹���
+    // Python AS 端规则：
     // PBKDF2-HMAC-SHA256(password, salt, iter, dklen=32)
-    // ǰ 8 �ֽ���Ϊ Kuser��
+    // 前 8 字节作为 Kuser。
     // ============================================================
 
     public static byte[] DerivePasswordMaterial(
@@ -113,10 +113,10 @@ public static class ClientCrypto
     // ============================================================
     // DES-CBC-PKCS7
     //
-    // ��ʽ��
+    // 格式：
     // Base64(iv + ciphertext)
     //
-    // DES block / CBC / PKCS7 �� CustomDes.cs �Լ�ʵ�֡�
+    // DES block / CBC / PKCS7 由 CustomDes.cs 自己实现。
     // ============================================================
 
     public static string DesEncryptJson(byte[] key, string json)
@@ -127,19 +127,25 @@ public static class ClientCrypto
         if (json == null)
             json = "{}";
 
-        CryptoTrace.Log(
-            "DES ���ܿ�ʼ",
-            "��ʽ��Base64(iv + ciphertext)���㷨����д DES-CBC-PKCS7��"
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesEncrypt,
+            1,
+            4,
+            "准备 DES 明文",
+            "客户端把需要发送的 JSON 明文转换成 UTF-8 字节，准备进入 DES-CBC 加密。",
+            input: json,
+            output: Encoding.UTF8.GetByteCount(json) + " bytes plaintext"
         );
 
-        CryptoTrace.Log(
-            "1. DES ���� JSON",
-            json
-        );
-
-        CryptoTrace.Log(
-            "2. DES Key",
-            CryptoTrace.Hex(key)
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesEncrypt,
+            2,
+            4,
+            "准备 DES 密钥和 IV",
+            "DES 使用 8 字节密钥。CBC 模式还需要一个随机 8 字节 IV，保证相同明文每次加密结果不同。",
+            input: "DES key = " + CryptoTrace.Hex(key),
+            output: "IV will be generated randomly",
+            formula: "DES key length = 64 bit, IV length = 64 bit"
         );
 
         byte[] iv = new byte[DesBlockBytes];
@@ -151,10 +157,17 @@ public static class ClientCrypto
 
         byte[] plainBytes = Encoding.UTF8.GetBytes(json);
 
-        CryptoTrace.Log(
-            "3. ��� IV �������ֽ�",
-            $"IV:\n{CryptoTrace.Hex(iv)}\n\n" +
-            $"Plain Bytes:\n{CryptoTrace.Hex(plainBytes, 96)}"
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesEncrypt,
+            3,
+            4,
+            "DES-CBC-PKCS7 加密",
+            "先对明文做 PKCS7 填充，然后每一块先和上一块密文或 IV 异或，再进行 DES 块加密。",
+            input:
+                "IV = " + CryptoTrace.Hex(iv) + "\n" +
+                "Plain = " + CryptoTrace.BytesInfo(plainBytes, 32),
+            output: "进入自写 CustomDes.EncryptCbcPkcs7",
+            formula: "Cᵢ = DES_ENC(Pᵢ XOR Cᵢ₋₁)"
         );
 
         byte[] cipherBytes = CustomDes.EncryptCbcPkcs7(
@@ -170,14 +183,22 @@ public static class ClientCrypto
 
         string result = Convert.ToBase64String(output);
 
-        CryptoTrace.Log(
-            "4. DES-CBC-PKCS7 ���ܽ��",
-            $"Ciphertext:\n{CryptoTrace.Hex(cipherBytes, 96)}\n\n" +
-            $"Base64(iv + ciphertext):\n{CryptoTrace.Mask(result, 40, 24)}"
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesEncrypt,
+            4,
+            4,
+            "Base64 封装",
+            "最终网络传输格式是 Base64(iv + ciphertext)。服务端收到后会先拆出 IV，再用同样的 DES-CBC-PKCS7 规则解密。",
+            input:
+                "Ciphertext = " + CryptoTrace.BytesInfo(cipherBytes, 32),
+            output:
+                "Base64(iv + ciphertext) = " + CryptoTrace.Mask(result),
+            formula: "message = Base64(IV || Ciphertext)"
         );
 
         return result;
     }
+
     public static string DesDecryptJson(byte[] key, string ciphertextB64)
     {
         if (key == null || key.Length != DesKeyBytes)
@@ -186,14 +207,15 @@ public static class ClientCrypto
         if (string.IsNullOrWhiteSpace(ciphertextB64))
             throw new ArgumentException("DES ciphertext is empty.");
 
-        CryptoTrace.Log(
-            "DES ���ܿ�ʼ",
-            "��ʽ��Base64(iv + ciphertext)���㷨����д DES-CBC-PKCS7��"
-        );
-
-        CryptoTrace.Log(
-            "1. DES Key",
-            CryptoTrace.Hex(key)
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesDecrypt,
+            1,
+            4,
+            "解析 DES 密文",
+            "服务端返回的 DES 数据格式是 Base64(iv + ciphertext)。客户端先进行 Base64 解码。",
+            input: "Base64 密文 = " + CryptoTrace.Mask(ciphertextB64),
+            output: "准备拆分 IV 和 ciphertext",
+            formula: "raw = Base64Decode(message)"
         );
 
         byte[] raw = Convert.FromBase64String(ciphertextB64.Trim());
@@ -207,11 +229,31 @@ public static class ClientCrypto
         Buffer.BlockCopy(raw, 0, iv, 0, DesBlockBytes);
         Buffer.BlockCopy(raw, DesBlockBytes, cipherBytes, 0, cipherBytes.Length);
 
-        CryptoTrace.Log(
-            "2. ��� Base64 ����",
-            $"Raw:\n{CryptoTrace.Hex(raw, 96)}\n\n" +
-            $"IV:\n{CryptoTrace.Hex(iv)}\n\n" +
-            $"Ciphertext:\n{CryptoTrace.Hex(cipherBytes, 96)}"
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesDecrypt,
+            2,
+            4,
+            "拆分 IV 和密文",
+            "前 8 字节是 CBC 模式的 IV，后面的部分才是真正的 DES 密文块。",
+            input:
+                "Raw = " + CryptoTrace.BytesInfo(raw, 32),
+            output:
+                "IV = " + CryptoTrace.Hex(iv) + "\n" +
+                "Ciphertext = " + CryptoTrace.BytesInfo(cipherBytes, 32),
+            formula: "raw = IV || Ciphertext"
+        );
+
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesDecrypt,
+            3,
+            4,
+            "DES-CBC-PKCS7 解密",
+            "逐块执行 DES 解密，再和上一块密文或 IV 异或，最后去掉 PKCS7 填充。",
+            input:
+                "DES key = " + CryptoTrace.Hex(key) + "\n" +
+                "Ciphertext length = " + cipherBytes.Length + " bytes",
+            output: "进入自写 CustomDes.DecryptCbcPkcs7",
+            formula: "Pᵢ = DES_DEC(Cᵢ) XOR Cᵢ₋₁"
         );
 
         byte[] plainBytes = CustomDes.DecryptCbcPkcs7(
@@ -222,9 +264,14 @@ public static class ClientCrypto
 
         string plainJson = Encoding.UTF8.GetString(plainBytes);
 
-        CryptoTrace.Log(
-            "3. DES-CBC-PKCS7 ���ܽ��",
-            plainJson
+        CryptoTrace.Step(
+            CryptoTraceFlow.DesDecrypt,
+            4,
+            4,
+            "得到 JSON 明文",
+            "DES 解密完成后，客户端得到服务端返回的票据内容、会话密钥或认证响应。",
+            input: plainBytes.Length + " bytes plaintext",
+            output: plainJson
         );
 
         return plainJson;
@@ -245,18 +292,17 @@ public static class ClientCrypto
     // ============================================================
     // RSA-OAEP-SHA256
     //
-    // AS ���� payload ��ʽ��
+    // AS 请求 payload 格式：
     // Base64(RSA-OAEP-SHA256(JSON))
     //
-    // ���ﲻ��ʹ�� BouncyCastle��
-    // PEM / DER / ASN.1 ��Կ������ PemPublicKeyParser.cs ��ɡ�
-    // OAEP-SHA256 + RSA m^e mod n �� CustomRsa.cs ��ɡ�
+    // PEM / DER / ASN.1 公钥解析由 PemPublicKeyParser.cs 完成。
+    // OAEP-SHA256 + RSA m^e mod n 由 CustomRsa.cs 完成。
     // ============================================================
 
-    public static string RsaEncryptJsonWithPublicPem(string publicPem, string json)
+    public static string RsaEncryptJsonWithPublicPem(string publicKeyJson, string json)
     {
-        if (string.IsNullOrWhiteSpace(publicPem))
-            throw new ArgumentException("RSA public PEM is empty.");
+        if (string.IsNullOrWhiteSpace(publicKeyJson))
+            throw new ArgumentException("RSA public key JSON is empty.");
 
         if (json == null)
             json = "{}";
@@ -265,46 +311,77 @@ public static class ClientCrypto
         {
             CryptoTrace.Clear();
 
-            CryptoTrace.Log(
-                "RSA ���ܿ�ʼ",
-                "��;���ͻ��˰� REGISTER_REQ / AS_REQ / CHANGE_PASSWORD_REQ ������ payload ���ܺ󷢸� AS��"
+            CryptoTrace.Step(
+                CryptoTraceFlow.RsaEncrypt,
+                1,
+                5,
+                "生成明文 JSON",
+                "客户端把用户名、密码、nonce 等敏感字段组装成 JSON。这个 JSON 不会明文发送给服务器。",
+                input: json,
+                output: Encoding.UTF8.GetByteCount(json) + " bytes plaintext"
             );
 
-            CryptoTrace.Log(
-                "1. ���� JSON",
-                json
-            );
+            RsaRawPublicKey publicKey =
+                RsaRawBlocksJson.ParsePublicKeyJson(publicKeyJson);
 
-            PemRsaPublicKey publicKey =
-                PemPublicKeyParser.ParseSubjectPublicKeyInfo(publicPem);
+            int plainBlockSize = RsaRawBlocksJson.MaxPlainBlockBytes(publicKey.N);
+            int cipherBlockSize = RsaRawBlocksJson.CipherBlockBytes(publicKey.N);
 
-            CryptoTrace.Log(
-                "2. ���� AS ��Կ PEM",
-                $"Modulus n:\n{CryptoTrace.Hex(publicKey.Modulus, 96)}\n\n" +
-                $"Exponent e:\n{CryptoTrace.Hex(publicKey.Exponent)}\n\n" +
-                $"˵����RSA ��Կ�� n �� e ��ɣ�����ִ�� c = m^e mod n��"
+            CryptoTrace.Step(
+                CryptoTraceFlow.RsaEncrypt,
+                2,
+                5,
+                "解析 AS 公钥 JSON",
+                "客户端读取 as_public_key.json，从中解析 RSA 公钥参数 n 和 e。",
+                input: "AS public key JSON",
+                output:
+                    "n bit length = " + publicKey.N.GetBitLengthSafe() + "\n" +
+                    "e = " + publicKey.E,
+                formula: "RSA public key = (n, e)"
             );
 
             byte[] plainBytes = Encoding.UTF8.GetBytes(json);
 
-            CryptoTrace.Log(
-                "3. UTF-8 �����ֽ�",
-                CryptoTrace.BytesInfo(plainBytes)
+            CryptoTrace.Step(
+                CryptoTraceFlow.RsaEncrypt,
+                3,
+                5,
+                "RSA 明文分块",
+                "新版服务器协议使用 RSA_RAW_BLOCKS。客户端把明文按 block_size 分块，每块转成大整数后分别加密。",
+                input: "Plain length = " + plainBytes.Length + " bytes",
+                output:
+                    "block_size = " + plainBlockSize + " bytes\n" +
+                    "cipher_block_size = " + cipherBlockSize + " bytes",
+                formula: "block_size = floor((bitlen(n)-1)/8)"
             );
 
-            byte[] encrypted = CustomRsa.EncryptOaepSha256(
-                publicKey.Modulus,
-                publicKey.Exponent,
-                plainBytes
+            byte[] envelopeBytes =
+                RsaRawBlocksJson.EncryptBytesToEnvelopeBytes(plainBytes, publicKey);
+
+            string envelopeJson = Encoding.UTF8.GetString(envelopeBytes);
+
+            CryptoTrace.Step(
+                CryptoTraceFlow.RsaEncrypt,
+                4,
+                5,
+                "RSA_RAW_BLOCKS 加密",
+                "每个明文块执行 RSA 公钥模幂运算，得到固定长度密文块，然后写入 envelope JSON。",
+                input: "plaintext blocks",
+                output: CryptoTrace.Mask(envelopeJson, 120, 40),
+                formula: "c = m^e mod n"
             );
 
-            string encryptedB64 = Convert.ToBase64String(encrypted);
+            string encryptedB64 = Convert.ToBase64String(envelopeBytes);
 
-            CryptoTrace.Log(
-                "4. RSA-OAEP-SHA256 ���ܽ��",
-                $"Cipher Hex:\n{CryptoTrace.Hex(encrypted, 96)}\n\n" +
-                $"Cipher Base64:\n{CryptoTrace.Mask(encryptedB64, 40, 24)}\n\n" +
-                $"˵�������� payload = Base64(RSA-OAEP-SHA256(JSON))��"
+            CryptoTrace.Step(
+                CryptoTraceFlow.RsaEncrypt,
+                5,
+                5,
+                "Base64 封装",
+                "客户端把 envelope JSON 转成 UTF-8 字节，再 Base64 编码，作为 AS 请求 payload。",
+                input: envelopeBytes.Length + " bytes envelope JSON",
+                output: CryptoTrace.Mask(encryptedB64),
+                formula: "payload = Base64(EnvelopeJson)"
             );
 
             return encryptedB64;
@@ -312,19 +389,20 @@ public static class ClientCrypto
         catch (Exception ex)
         {
             Debug.LogError(
-                "[ClientCrypto] Custom RSA-OAEP-SHA256 encrypt failed. " +
-                "��ȷ�� as_public_key.txt ������������ʽ�� PEM PUBLIC KEY��\n" +
+                "[ClientCrypto] RSA_RAW_BLOCKS encrypt failed. " +
+                "请确认客户端使用的是服务器最新 as_public_key.json。\n" +
                 ex
             );
 
             CryptoTrace.Log(
-                "RSA ����ʧ��",
+                "RSA 加密失败",
                 ex.ToString()
             );
 
             throw;
         }
     }
+
     // ============================================================
     // Validation helpers
     // ============================================================
@@ -336,5 +414,34 @@ public static class ClientCrypto
 
         if (key == null || key.Length != DesKeyBytes)
             throw new ArgumentException($"{label} must decode to exactly 8 bytes.");
+    }
+}
+
+public static class BigIntegerTraceExtensions
+{
+    public static int GetBitLengthSafe(this BigInteger value)
+    {
+        if (value < 0)
+            value = BigInteger.Abs(value);
+
+        if (value.IsZero)
+            return 0;
+
+        byte[] bytes = value.ToByteArray();
+        int actualLength = bytes.Length;
+
+        while (actualLength > 1 && bytes[actualLength - 1] == 0x00)
+            actualLength--;
+
+        int bits = (actualLength - 1) * 8;
+        byte top = bytes[actualLength - 1];
+
+        while (top != 0)
+        {
+            bits++;
+            top >>= 1;
+        }
+
+        return bits;
     }
 }
