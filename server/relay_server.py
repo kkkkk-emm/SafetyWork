@@ -24,7 +24,6 @@ from game_config import (
     MOVE_SPEED,
     RECONNECT_GRACE_SECONDS,
     SIM_DT,
-    TYPE_CHAT,
     TYPE_LEAVE_ROOM,
     WEAPON_DB,
     KNOCKBACK_DRAG_X,
@@ -69,8 +68,10 @@ from relay_snapshot import SnapshotBroadcastMixin
 class RelayServer(
     GsErrorHandlingMixin, RoomLifecycleMixin, SnapshotBroadcastMixin, LootManagerMixin
 ):
+    """处理 RelayServer 相关的 GS 中继服务流程。"""
     def __init__(self, host: Optional[str] = None, port: Optional[int] = None) -> None:
         # ── 配置 / DB / 密钥 ──
+        """处理 RelayServer.__init__ 相关的 GS 中继服务流程。"""
         self.db_config = load_db_config()
         self.config = load_gs_config()
         self.host = host if host is not None else self.config.host
@@ -120,6 +121,7 @@ class RelayServer(
         self.k_gs = k_gs
 
     async def run(self) -> None:
+        """处理 RelayServer.run 相关的 GS 中继服务流程。"""
         self.db.ping()
         self.load_runtime_keys()
         print("=" * 72)
@@ -148,6 +150,7 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
 
     async def handle_client(self, websocket: Any) -> None:
+        """处理 RelayServer.handle_client 相关的 GS 中继服务流程。"""
         remote = websocket.remote_address
         self.sessions[websocket] = ClientSession()
         print(f"[CONNECT] 新连接: remote={remote} | 当前连接数={len(self.sessions)}")
@@ -162,6 +165,7 @@ class RelayServer(
             await self.cleanup_client(websocket, reason="disconnect")
 
     async def handle_message(self, websocket: Any, raw_message: str) -> None:
+        """处理 RelayServer.handle_message 相关的 GS 中继服务流程。"""
         session = self.sessions.get(websocket)
 
         if session is None:
@@ -244,21 +248,27 @@ class RelayServer(
         data: Dict[str, Any],
         msg_type: str,
     ) -> None:
+        """处理 RelayServer.dispatch_authenticated_message 相关的 GS 中继服务流程。"""
         if msg_type == TYPE_HEARTBEAT_REQ:
+            # 处理心跳请求
             await self.handle_heartbeat(websocket, data)
         elif msg_type == TYPE_ROOM_CREATE_REQ:
+            # 处理创建房间请求
             await self.handle_create_room(websocket, data)
         elif msg_type == TYPE_ROOM_JOIN_REQ:
+            # 处理加入房间请求
             await self.handle_join_room(websocket, data)
         elif msg_type == TYPE_ROOM_READY_REQ:
+            # 处理房间准备请求
             await self.handle_ready(websocket, data)
         elif msg_type == TYPE_ROOM_START_REQ:
+            # 处理房间开始请求
             await self.handle_start_game(websocket, data)
         elif msg_type == TYPE_INPUT:
+            # 处理输入请求
             await self.handle_input(websocket, data)
-        elif msg_type == TYPE_CHAT:
-            await self.handle_chat(websocket, data)
         elif msg_type == TYPE_LEAVE_ROOM:
+            # 处理离开房间请求
             await self.handle_leave_room(websocket, data)
         else:
             await self.send_error(websocket, f"UNSUPPORTED_TYPE: {msg_type}")
@@ -268,7 +278,8 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
 
     async def handle_gs_auth(self, websocket: Any, data: Dict[str, Any]) -> None:
-        """Handle GS_AUTH by validating the service ticket and creating a session."""
+        # GS_AUTH 是客户端进入游戏服务器的第一道门禁。
+        # 这里要做三件事：校验票据、解密客户端认证器、创建已认证会话。
         require_fields(data, ("clientId", "ticket", "auth"))
         client_id = require_string_field(data, "clientId")
         if self.k_gs is None:
@@ -281,6 +292,7 @@ class RelayServer(
         )
 
         with self.db.connection() as conn:
+            # 先验证 ServiceTicket 是否可信，并从中取出本次会话要用的 KcGs。
             ticket = self.security.validate_service_ticket(
                 conn,
                 k_gs=self.k_gs,
@@ -294,6 +306,7 @@ class RelayServer(
             if ticket.kc_gs is None:
                 raise GsRequestError("INVALID_TICKET")
 
+            # 再用 KcGs 解密客户端的 authenticator，确认它是同一个用户、同一台客户端发来的。
             auth = self.security.decrypt_client_authenticator(
                 conn,
                 kc_gs=ticket.kc_gs,
@@ -332,6 +345,7 @@ class RelayServer(
             )
             conn.commit()
 
+        # 回给客户端一个用 KcGs 加密的响应，证明服务端也完成了认证流程。
         protected_payload = des_encrypt_object(
             ticket.kc_gs,
             {
@@ -352,6 +366,7 @@ class RelayServer(
         )
 
     async def handle_heartbeat(self, websocket: Any, data: Dict[str, Any]) -> None:
+        """处理 RelayServer.handle_heartbeat 相关的 GS 中继服务流程。"""
         session = self._require_session(websocket)
         require_fields(data, ("sessionId", "auth"))
         if require_string_field(data, "sessionId") != session.session_id:
@@ -390,7 +405,16 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
 
     async def handle_reconnect(self, websocket: Any, data: Dict[str, Any]) -> None:
-        """Handle reconnect by validating the ticket, auth, payload, and grace state."""
+        """处理客户端重连请求。
+        
+        重连流程：
+        1. 客户端在连接断开后，有有限时间窗口可以用旧 sessionId 重新连接
+        2. 需要重新校验 ticket，但这次不需要 ServiceTicket 中的 service 和 kc 字段
+        3. 用保存在重连宽限期内的 KcGs 来解密新传入的 auth 和 payload
+        4. 校验客户端上报的 lastProcessedSeq，防止数据不一致
+        5. 将旧 session 转移到新 websocket，玩家重新上线
+        """
+        # ── 参数校验 ──
         require_fields(data, ("clientId", "sessionId", "ticket", "auth", "payload"))
         client_id = require_string_field(data, "clientId")
         session_id = require_string_field(data, "sessionId")
@@ -398,12 +422,15 @@ class RelayServer(
             raise GsRequestError("KEY_NOT_CONFIGURED")
         current_ms = now_ms()
 
+        # ── 从重连宽限期查询旧会话 ──
+        # 如果 sessionId 不在重连宽限期内，说明重连窗口已过期，拒绝重连。
         grace_info = self.reconnect_grace.get(session_id)
         if grace_info is None:
             raise GsRequestError("RECONNECT_EXPIRED")
         old_session: ClientSession = grace_info["session"]
         if old_session.kc_gs is None:
             raise GsRequestError("KEY_NOT_CONFIGURED")
+        # 复用旧会话的 KcGs 来解密这次重连请求中的 auth 和 payload。
         kc_gs = old_session.kc_gs
         context = SecurityEventContext(
             event_type="RECONNECT_FAIL",
@@ -414,6 +441,9 @@ class RelayServer(
         )
 
         with self.db.connection() as conn:
+            # ── 验证 ServiceTicket ──
+            # 重连时 require_service=False, require_kc=False，因为我们已经有旧会话中保存的 KcGs，
+            # 不需要从 ticket 中重新提取。这里只是校验 ticket 本身的有效性和用户身份匹配。
             ticket = self.security.validate_service_ticket(
                 conn,
                 k_gs=self.k_gs,
@@ -427,6 +457,8 @@ class RelayServer(
             if ticket.user_id != old_session.user_id:
                 raise GsRequestError("SESSION_MISMATCH")
 
+            # ── 解密 auth（认证信息） ──
+            # 用旧会话的 KcGs 来解密客户端发来的 auth，验证这次重连请求确实来自同一用户。
             auth = self.security.decrypt_client_authenticator(
                 conn,
                 kc_gs=kc_gs,
@@ -448,6 +480,9 @@ class RelayServer(
             auth_nonce = require_string_field(auth, "nonce")
             self._expire_reconnect_grace(current_ms)
 
+            # ── 解密 payload（业务数据） ──
+            # payload 中包含客户端最后一次成功处理的 INPUT seq，
+            # 用来防止在重连过程中丢失或重复处理消息。
             payload = self.security.decrypt_client_payload(
                 conn,
                 kc_gs=kc_gs,
@@ -466,26 +501,33 @@ class RelayServer(
                 raise GsRequestError("ROOM_MISMATCH")
             if require_string_field(payload, "nonce") != auth_nonce:
                 raise GsRequestError("NONCE_MISMATCH")
+            # 客户端上报它已经处理到了哪一个 INPUT seq，用这个来同步服务端。
             last_processed_seq = read_int(payload, "lastProcessedSeq")
 
+            # ── 会话恢复：从重连宽限期弹出旧会话并关联到新 websocket ──
             grace_info = self.reconnect_grace.pop(session_id, None)
             if grace_info is None:
                 raise GsRequestError("RECONNECT_EXPIRED")
             room_id = grace_info["room_id"]
 
+            # 同步客户端上报的 seq，确保服务端知道客户端已处理到哪一帧。
             old_session.last_seq = max(old_session.last_seq, last_processed_seq)
             old_session.authenticated = True
+            # 把旧会话关联到新的 websocket（新连接）。
             self.sessions[websocket] = old_session
             self.sessions_by_id[session_id] = old_session
 
+            # ── 更新房间状态：玩家重新上线 ──
             self.rooms.setdefault(room_id, set()).add(websocket)
             room_state = self.room_states.get(room_id)
             if room_state is not None and old_session.client_id:
                 players = room_state.get("players", {})
                 if old_session.client_id in players:
+                    # 把玩家的 websocket 指向新连接，标记为在线。
                     players[old_session.client_id]["websocket"] = websocket
                     players[old_session.client_id]["online"] = True
 
+            # 记录重连成功事件。
             self.security.record_success(
                 conn,
                 context,
@@ -495,6 +537,8 @@ class RelayServer(
             )
             conn.commit()
 
+        # ── 生成并发送重连响应 ──
+        # 告诉客户端重连成功，并通知游戏当前是什么状态（PLAYING 还是 FINISHED）。
         room_status = (
             self.room_states.get(room_id, {}).get("status", "PLAYING")
             if room_id
@@ -526,6 +570,8 @@ class RelayServer(
             f"[RECONNECT OK] client={client_id} userId={old_session.user_id} sessionId={session_id}"
         )
 
+        # ── 广播房间状态和快照给所有在线玩家 ──
+        # 让房间内其他玩家知道这个玩家已经重新上线。
         await self.broadcast_room_state(room_id)
         await self.broadcast_snapshot(room_id)
 
@@ -594,12 +640,14 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
 
     def _require_session(self, websocket: Any) -> ClientSession:
+        """处理 RelayServer._require_session 相关的 GS 中继服务流程。"""
         session = self.sessions.get(websocket)
         if session is None or not session.authenticated:
             raise GsRequestError("NOT_AUTHENTICATED")
         return session
 
     def _require_kc_gs(self, session: ClientSession) -> bytes:
+        """处理 RelayServer._require_kc_gs 相关的 GS 中继服务流程。"""
         if session.kc_gs is None:
             raise GsRequestError("KEY_NOT_CONFIGURED")
         return session.kc_gs
@@ -628,10 +676,12 @@ class RelayServer(
         return des_encrypt_object(kc_gs, obj)
 
     def prune_replay_cache(self, current_ms: int) -> None:
+        """处理 RelayServer.prune_replay_cache 相关的 GS 中继服务流程。"""
         self.replay_guard.prune(current_ms)
         self._expire_reconnect_grace(current_ms)
 
     def remote_ip(self, websocket: Any) -> Optional[str]:
+        """处理 RelayServer.remote_ip 相关的 GS 中继服务流程。"""
         remote = getattr(websocket, "remote_address", None)
         if remote is None:
             return None
@@ -648,6 +698,7 @@ class RelayServer(
 
     @staticmethod
     def _read_float(cmd: Dict[str, Any], field: str, default: float) -> float:
+        """处理 RelayServer._read_float 相关的 GS 中继服务流程。"""
         try:
             value = float(cmd.get(field, default))
         except (TypeError, ValueError) as exc:
@@ -658,11 +709,13 @@ class RelayServer(
 
     @classmethod
     def _read_unit_float(cls, cmd: Dict[str, Any], field: str, default: float) -> float:
+        """处理 RelayServer._read_unit_float 相关的 GS 中继服务流程。"""
         value = cls._read_float(cmd, field, default)
         return max(-1.0, min(1.0, value))
 
     @staticmethod
     def _config_int(value: Any, default: int) -> int:
+        """处理 RelayServer._config_int 相关的 GS 中继服务流程。"""
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -760,7 +813,9 @@ class RelayServer(
         print(f"[ROOM RUNTIME CLEANUP] room={room_id}")
 
     def parse_input_payload(self, cmd: dict) -> InputPayload:
+        """处理 RelayServer.parse_input_payload 相关的 GS 中继服务流程。"""
         effect_ids_raw = cmd.get("equippedEffectIds", [])
+        # 客户端传入的效果列表只接受 list，其他类型直接降级为空列表。
         effect_ids = (
             [str(eid) for eid in effect_ids_raw]
             if isinstance(effect_ids_raw, list)
@@ -801,10 +856,14 @@ class RelayServer(
         weapon_id = session.equipped_weapon_id
         weapon_cfg = WEAPON_DB.get(weapon_id)
         if weapon_cfg is None:
+            # 如果武器表里找不到当前武器，就退回到默认武器配置，避免配置缺失导致逻辑中断。
             weapon_cfg = WEAPON_DB.get("手枪", {})
 
         attack_mode = weapon_cfg.get("attack_mode", "ranged")
         auto_fire = bool(weapon_cfg.get("auto_fire", attack_mode == "ranged"))
+
+        # fire_interval_ticks 是攻击冷却间隔，单位是 tick。
+        # 数值越大，同一把武器两次攻击之间的最小等待时间越长。
         fire_interval_ticks = self._config_int(
             weapon_cfg.get("fire_interval_ticks", 10), 10
         )
@@ -1229,6 +1288,7 @@ class RelayServer(
             f"oldRoom={old_room_id}"
         )
     async def cleanup_client(self, websocket: Any, reason: str) -> None:
+        """处理 RelayServer.cleanup_client 相关的 GS 中继服务流程。"""
         session = self.sessions.get(websocket)
         if session is None:
             return
@@ -1243,6 +1303,7 @@ class RelayServer(
                 "STARTING",
             )
             if is_playing:
+                # 对局中断线保留 sessionId，给客户端重连窗口；非对局状态则直接清房间。
                 self.remove_from_room(websocket, room_id)
                 self.sessions.pop(websocket, None)
                 self._enter_reconnect_grace(session)
@@ -1271,6 +1332,7 @@ class RelayServer(
     async def close_and_forget_socket(
         self, websocket: Any, reason: str = "replaced"
     ) -> None:
+        """处理 RelayServer.close_and_forget_socket 相关的 GS 中继服务流程。"""
         if websocket is None:
             return
         old_session = self.sessions.get(websocket)
@@ -1281,6 +1343,7 @@ class RelayServer(
             self.remove_from_room(websocket, old_room_id)
             room_state = self.room_states.get(old_room_id)
             if room_state is not None:
+                # 被替换的旧 socket 必须从 room_state.players 中解绑，避免幽灵玩家占位。
                 players = room_state.get("players", {})
                 for cid in list(players.keys()):
                     if players[cid].get("websocket") is websocket:
@@ -1320,6 +1383,7 @@ class RelayServer(
 
         return bool(value)
     def remove_from_room(self, websocket: Any, room_id: str) -> None:
+        """处理 RelayServer.remove_from_room 相关的 GS 中继服务流程。"""
         members = self.rooms.get(room_id)
 
         if not members:
@@ -1337,9 +1401,11 @@ class RelayServer(
             print(f"[ROOM MEMBERS EMPTY] room={room_id}, runtime kept")
 
     async def send_error(self, websocket: Any, error_message: str) -> None:
+        """处理 RelayServer.send_error 相关的 GS 中继服务流程。"""
         await self.send_json(websocket, {"type": "ERROR", "error": error_message})
 
     async def send_json(self, websocket: Any, payload: Dict[str, Any]) -> None:
+        """处理 RelayServer.send_json 相关的 GS 中继服务流程。"""
         try:
             await websocket.send(json.dumps(payload, ensure_ascii=False))
         except ConnectionClosed:
@@ -1350,14 +1416,18 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
 
     def hits_wall(self, x: float, y: float) -> bool:
+        """处理 RelayServer.hits_wall 相关的 GS 中继服务流程。"""
         return game_simulation.hits_wall(x, y)
 
     def step_vertical(self, session: ClientSession) -> None:
+        """处理 RelayServer.step_vertical 相关的 GS 中继服务流程。"""
         game_simulation.step_vertical(session)
 
     def get_standing_platform(self, session: ClientSession) -> Optional[Platform]:
+        """处理 RelayServer.get_standing_platform 相关的 GS 中继服务流程。"""
         return game_simulation.get_standing_platform(session)
 
     @staticmethod
     def utc_now_iso() -> str:
+        """处理 RelayServer.utc_now_iso 相关的 GS 中继服务流程。"""
         return datetime.now(timezone.utc).isoformat()

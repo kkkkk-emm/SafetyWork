@@ -40,6 +40,7 @@ class GsConfig:
 
 
 def _required_env(name: str) -> str:
+    """读取并校验 _required_env 相关的 GS 配置。"""
     value = os.getenv(name)
     if value is None or value.strip() == "":
         raise ConfigError(f"missing required environment variable: {name}")
@@ -47,6 +48,7 @@ def _required_env(name: str) -> str:
 
 
 def _int_env(name: str, default: int) -> int:
+    """读取并校验 _int_env 相关的 GS 配置。"""
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default

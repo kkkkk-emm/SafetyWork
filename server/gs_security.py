@@ -74,6 +74,7 @@ class ReplayGuard:
     非线程安全——所有 WebSocket 回调运行在同一个 asyncio 事件循环中。
     """
     def __init__(self, cache: Optional[Dict[str, int]] = None) -> None:
+        """处理 ReplayGuard.__init__ 相关的票据、会话密钥或安全审计逻辑。"""
         self.cache: Dict[str, int] = cache if cache is not None else {}
 
     def prune(self, current_ms: int) -> None:
@@ -112,6 +113,7 @@ class GsSecurityService:
     所有需要 DB 连接的方法接收 conn 参数，由调用方管理事务边界。
     """
     def __init__(self, dao: Any, config: Any, replay_guard: ReplayGuard) -> None:
+        """处理 GsSecurityService.__init__ 相关的票据、会话密钥或安全审计逻辑。"""
         self.dao = dao
         self.config = config
         self.replay_guard = replay_guard
@@ -143,12 +145,14 @@ class GsSecurityService:
         5. 查询 user_account 校验 login_gen 和 status（防止密码修改后旧票据仍可用）
         """
         try:
+            # Service Ticket 只能由 GS 持有的 K_GS 解开，解密失败直接视为无效票据。
             raw_ticket = des_decrypt_object(k_gs, encrypted_ticket)
         except CryptoError as exc:
             self.record_failure(conn, context, reason=str(exc))
             raise GsRequestError("INVALID_TICKET") from exc
 
         try:
+            # 逐项校验票据声明，避免客户端把其他服务或其他 clientId 的票据拿来复用。
             if require_string_field(raw_ticket, "ticketType") != "SERVICE_TICKET":
                 raise GsRequestError("INVALID_TICKET")
             if (
@@ -169,6 +173,7 @@ class GsSecurityService:
             
             kc_gs = None
             if require_kc:
+                # GS_AUTH 必须带 KcGs；后续会话加密完全依赖这里解出的会话密钥。
                 kc_gs = b64decode(require_string_field(raw_ticket, "kcGs"))
                 if len(kc_gs) != DES_KEY_BYTES:
                     raise GsRequestError("INVALID_TICKET")
@@ -208,6 +213,7 @@ class GsSecurityService:
         try:
             auth = des_decrypt_object(kc_gs, encrypted_auth)
         except CryptoError as exc:
+            # 认证器解不开时不能继续暴露更细的业务原因，只记录审计后统一拒绝。
             self.record_failure(
                 conn,
                 context,
@@ -259,11 +265,13 @@ class GsSecurityService:
     def decrypt_session_auth(
         self, session: Any, data: Dict[str, Any]
     ) -> Dict[str, Any]:
+        """处理 GsSecurityService.decrypt_session_auth 相关的票据、会话密钥或安全审计逻辑。"""
         return self.decrypt_session_object(session, data, "auth")
 
     def decrypt_session_payload(
         self, session: Any, data: Dict[str, Any]
     ) -> Dict[str, Any]:
+        """处理 GsSecurityService.decrypt_session_payload 相关的票据、会话密钥或安全审计逻辑。"""
         return self.decrypt_session_object(session, data, "payload")
 
     def decrypt_session_object(
@@ -292,6 +300,7 @@ class GsSecurityService:
         if not timestamp_in_window(timestamp, current_ms, self.window_ms):
             raise GsRequestError("AUTH_EXPIRED")
 
+        # payload/auth 中的 nonce 也走同一套重放检测，防止会话内请求被复制重放。
         user_id = getattr(session, "user_id", None)
         client_id = getattr(session, "client_id", None)
         if user_id is None or not client_id:
@@ -324,6 +333,7 @@ class GsSecurityService:
         timestamp = require_int_field(payload, "ts")
         nonce = require_string_field(payload, "nonce")
         if not timestamp_in_window(timestamp, current_ms, self.window_ms):
+            # 时间窗口失败通常意味着旧包或明显时钟漂移，按认证过期处理并写安全日志。
             self.record_failure(
                 conn,
                 context,
@@ -340,6 +350,7 @@ class GsSecurityService:
             current_ms=current_ms,
             window_ms=self.window_ms,
         ):
+            # 同一用户、clientId、nonce 在窗口期内只能使用一次。
             self.record_failure(
                 conn,
                 context,
@@ -359,6 +370,7 @@ class GsSecurityService:
         user_id: Optional[int],
         username: Optional[str],
     ) -> None:
+        """处理 GsSecurityService.record_success 相关的票据、会话密钥或安全审计逻辑。"""
         self.dao.record_security_event(
             conn,
             user_id=user_id,
@@ -380,6 +392,7 @@ class GsSecurityService:
         user_id: Optional[int] = None,
         username: Optional[str] = None,
     ) -> None:
+        """处理 GsSecurityService.record_failure 相关的票据、会话密钥或安全审计逻辑。"""
         self.dao.record_security_event(
             conn,
             user_id=context.user_id if user_id is None else user_id,

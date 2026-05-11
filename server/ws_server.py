@@ -4,6 +4,7 @@ from relay_server import RelayServer
 
 
 def main() -> None:
+    """创建并运行 main 相关的 WebSocket 服务入口。"""
     server = RelayServer()
     try:
         asyncio.run(server.run())

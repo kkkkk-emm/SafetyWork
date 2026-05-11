@@ -32,9 +32,11 @@ class GsDao:
     """GS 数据访问对象。"""
 
     def __init__(self, config: DbConfig) -> None:
+        """处理 GsDao.__init__ 相关的数据库访问逻辑。"""
         self.config = config
 
     def _ensure_driver(self) -> None:
+        """处理 GsDao._ensure_driver 相关的数据库访问逻辑。"""
         if pymysql is None:
             raise DatabaseError(
                 "pymysql is required; install dependencies"
@@ -42,6 +44,7 @@ class GsDao:
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
+        """处理 GsDao.connection 相关的数据库访问逻辑。"""
         self._ensure_driver()
         conn = pymysql.connect(
             host=self.config.host,
@@ -59,6 +62,7 @@ class GsDao:
             conn.close()
 
     def ping(self) -> None:
+        """处理 GsDao.ping 相关的数据库访问逻辑。"""
         with self.connection() as conn:
             conn.ping(reconnect=False)
 
@@ -109,6 +113,7 @@ class GsDao:
 
 
 def _truncate(value: Optional[str], limit: int) -> Optional[str]:
+    """处理 _truncate 相关的数据库访问逻辑。"""
     if value is None:
         return None
     return value[:limit]

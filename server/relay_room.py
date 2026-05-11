@@ -30,24 +30,24 @@ from gs_protocol import (
 )
 from relay_contracts import RelayServerContext
 
-
 class RoomLifecycleMixin:
+    """处理 RoomLifecycleMixin 相关的房间生命周期逻辑。"""
     def generate_room_id(self: RelayServerContext) -> str:
-        """生成 4 位随机房间 ID（大写字母+数字），100 次尝试内唯一就返回，否则退化为 6 位。
-
+        """生成 4 位随机房间 ID（大写字母+数字）
         使用 secrets.choice 确保密码学安全的随机性，防止预测房间 ID 导致的未授权加入。
         """
         alphabet = string.ascii_uppercase + string.digits
-        for _ in range(100):
+        room_id = "".join(secrets.choice(alphabet) for _ in range(4))
+        while room_id in self.room_states:
             room_id = "".join(secrets.choice(alphabet) for _ in range(4))
-            if room_id not in self.room_states:
-                return room_id
-        return "".join(secrets.choice(alphabet) for _ in range(6))
+        return room_id
 
     def get_or_create_room_state(
         self: RelayServerContext, room_id: str, host_client_id: str
     ) -> Dict[str, Any]:
+        """处理 RoomLifecycleMixin.get_or_create_room_state 相关的房间生命周期逻辑。"""
         if room_id not in self.room_states:
+            # 房间状态只保存最小必要字段，玩家详情在 JOIN 时再补齐。
             self.room_states[room_id] = {
                 "hostClientId": host_client_id,
                 "status": "WAITING",
@@ -173,6 +173,7 @@ class RoomLifecycleMixin:
             await self.send_json(peer, msg)
 
     async def broadcast_game_start(self: RelayServerContext, room_id: str) -> None:
+        """处理 RoomLifecycleMixin.broadcast_game_start 相关的房间生命周期逻辑。"""
         match_id = f"match-{100 + secrets.randbelow(900)}"
         peers = list(self.rooms.get(room_id, set()))
         print(
@@ -209,6 +210,7 @@ class RoomLifecycleMixin:
     async def handle_create_room(
         self: RelayServerContext, websocket: Any, data: Dict[str, Any]
     ) -> None:
+        """处理 RoomLifecycleMixin.handle_create_room 相关的房间生命周期逻辑。"""
         session = self._require_session(websocket)
 
         # 解密并校验 auth
@@ -266,6 +268,7 @@ class RoomLifecycleMixin:
     async def handle_join_room(
         self: RelayServerContext, websocket: Any, data: Dict[str, Any]
     ) -> None:
+        """处理 RoomLifecycleMixin.handle_join_room 相关的房间生命周期逻辑。"""
         session = self._require_session(websocket)
 
         require_fields(data, ("sessionId", "roomId", "auth"))
@@ -344,6 +347,7 @@ class RoomLifecycleMixin:
         players = room_state["players"]
         room_status = str(room_state.get("status", "WAITING"))
 
+        # ClientId 是客户端协议里的玩家身份，slotNo 是房间座位；两者在 1v1 中固定对应。
         # ── ClientId 分配策略 ──
         if requested_client_id == "CREATE_HOST":
             # 房主创建房间 → 固定 Client1, slot=1
@@ -368,6 +372,7 @@ class RoomLifecycleMixin:
         if old_player is not None:
             old_ws = old_player.get("websocket")
             if old_ws is not None and old_ws is not websocket:
+                # 新连接占用同一个 ClientId 时，旧连接必须先踢下线以保持房间状态唯一。
                 print(f"[JOIN REPLACE] room={room_id} client={assigned_client_id}")
                 await self.close_and_forget_socket(
                     old_ws, reason=f"replaced by {assigned_client_id}"
@@ -454,6 +459,7 @@ class RoomLifecycleMixin:
     async def handle_ready(
         self: RelayServerContext, websocket: Any, data: Dict[str, Any]
     ) -> None:
+        """处理 RoomLifecycleMixin.handle_ready 相关的房间生命周期逻辑。"""
         session = self._require_session(websocket)
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
@@ -519,6 +525,7 @@ class RoomLifecycleMixin:
     async def handle_start_game(
         self: RelayServerContext, websocket: Any, data: Dict[str, Any]
     ) -> None:
+        """处理 RoomLifecycleMixin.handle_start_game 相关的房间生命周期逻辑。"""
         session = self._require_session(websocket)
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
@@ -543,6 +550,7 @@ class RoomLifecycleMixin:
         if room_state.get("status") != "WAITING":
             raise GsRequestError("ROOM_NOT_WAITING")  # 已经开始或已结束
 
+        # 开局前要求双人到齐且全部 ready，避免客户端单方面跳过大厅状态。
         players = list(room_state.get("players", {}).values())
         if len(players) < 2:
             raise GsRequestError("NEED_MORE_PLAYERS")
@@ -566,6 +574,7 @@ class RoomLifecycleMixin:
     async def handle_leave_room(
         self: RelayServerContext, websocket: Any, data: Dict[str, Any]
     ) -> None:
+        """处理 RoomLifecycleMixin.handle_leave_room 相关的房间生命周期逻辑。"""
         session = self.sessions.get(websocket)
         if session is None or not session.room_id:
             return
@@ -600,7 +609,3 @@ class RoomLifecycleMixin:
                 room_state["hostClientId"] = remaining_players[0]["clientId"]
             else:
                 self.room_states.pop(room_id, None)  # 无人房间直接删除
-
-    # ═══════════════════════════════════════════════════════════════
-    # INPUT (阶段五第1步)
-    # ═══════════════════════════════════════════════════════════════

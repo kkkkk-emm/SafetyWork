@@ -28,6 +28,7 @@ EffectConfig = Dict[str, Any]
 
 
 def _cfg_float(cfg: EffectConfig, key: str, default: float = 0.0) -> float:
+    """处理 _cfg_float 相关的战斗效果逻辑。"""
     try:
         return float(cfg.get(key, default))
     except (TypeError, ValueError):
@@ -35,6 +36,7 @@ def _cfg_float(cfg: EffectConfig, key: str, default: float = 0.0) -> float:
 
 
 def _cfg_int(cfg: EffectConfig, key: str, default: int = 0) -> int:
+    """处理 _cfg_int 相关的战斗效果逻辑。"""
     try:
         return int(cfg.get(key, default))
     except (TypeError, ValueError):
@@ -368,6 +370,7 @@ def execute_sword_wave(
     effect_ids: List[str],
     cfg: EffectConfig,
 ) -> None:
+    """处理 execute_sword_wave 相关的战斗效果逻辑。"""
     mag = (aim_x * aim_x + aim_y * aim_y) ** 0.5
 
     if mag <= 0.0001:

@@ -15,6 +15,7 @@ from relay_contracts import RelayServerContext
 
 
 class SnapshotBroadcastMixin:
+    """处理 SnapshotBroadcastMixin 相关的快照构造或广播逻辑。"""
     async def maybe_broadcast_snapshot(
         self: RelayServerContext,
         room_id: str,
@@ -28,6 +29,8 @@ class SnapshotBroadcastMixin:
         combat = self.get_room_combat(room_id)
 
         should_broadcast = True
+
+        # interval 至少为 1，避免配置误填 0 或负数导致除零/异常行为。
         if SNAPSHOT_THROTTLE_ENABLED:
             interval = max(1, int(SNAPSHOT_INTERVAL_TICKS))
             should_broadcast = tick % interval == 0
@@ -51,6 +54,7 @@ class SnapshotBroadcastMixin:
         combat = self.get_room_combat(room_id)
 
         players = []
+        # 快照只包含同房间玩家，且按服务端认可状态输出，客户端预测状态不会直接透传。
         for s in self.sessions.values():
             if s.room_id != room_id or s.client_id is None:
                 continue
@@ -312,7 +316,3 @@ class SnapshotBroadcastMixin:
         combat.clear_events()
         self.room_loots.pop(room_id, None)
         self.room_next_loot_tick.pop(room_id, None)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Chat
-    # ═══════════════════════════════════════════════════════════════
