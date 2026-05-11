@@ -1,16 +1,3 @@
-"""GS 快照广播 Mixin + 游戏结束检测。
-
-快照（SNAPSHOT）是服务端权威状态的同步载体，包含：
-- players[]: 所有玩家权威状态（位置/速度/伤害/命数/硬直）
-- projectiles[]: 飞行中的投射物
-- loots[]: 场上的空投物
-- events[]: 本帧发生的游戏事件
-
-广播策略：默认每 2 tick 广播一次（SNAPSHOT_THROTTLE_ENABLED），
-可配置每次有事件时强制广播（SNAPSHOT_FORCE_BROADCAST_ON_EVENTS）。
-每个客户端用各自的 KcGs 加密 payload——并行发送（asyncio.gather）。
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +8,6 @@ from game_config import (
     SNAPSHOT_FORCE_BROADCAST_ON_EVENTS,
     SNAPSHOT_INTERVAL_TICKS,
     SNAPSHOT_THROTTLE_ENABLED,
-    SNAPSHOT_ENCRYPT_EVERY_N,
 )
 from game_models import ClientSession
 from gs_protocol import TYPE_RESULT, TYPE_SNAPSHOT
@@ -33,34 +19,40 @@ class SnapshotBroadcastMixin:
         self: RelayServerContext,
         room_id: str,
         websocket: Any,
-        reject_reason: str = "",  # 非空时表示本帧拒绝了当前 websocket 的输入（seq 乱序/禁止字段等）
+        reject_reason: str = "",
     ) -> None:
-        """按节流策略决定是否广播快照。
-
-        节流逻辑：SNAPSHOT_THROTTLE_ENABLED=True 时每 N tick 广播一次，
-        但有事件时（SNAPSHOT_FORCE_BROADCAST_ON_EVENTS=True）强制立即广播。
-        """
         if not room_id:
             return
+
+        tick = self.get_room_tick(room_id)
+        combat = self.get_room_combat(room_id)
+
         should_broadcast = True
         if SNAPSHOT_THROTTLE_ENABLED:
             interval = max(1, int(SNAPSHOT_INTERVAL_TICKS))
-            should_broadcast = self.tick % interval == 0
-        if SNAPSHOT_FORCE_BROADCAST_ON_EVENTS and len(self.combat.pending_events) > 0:
+            should_broadcast = tick % interval == 0
+
+        if SNAPSHOT_FORCE_BROADCAST_ON_EVENTS and len(combat.pending_events) > 0:
             should_broadcast = True
+
         if not should_broadcast:
             return
+
         await self.broadcast_snapshot(
             room_id, reject_reason_by_socket={websocket: reject_reason}
         )
-        self.combat.clear_events()
+        combat.clear_events()
 
     def build_snapshot_payload(
         self: RelayServerContext, session: ClientSession, reject_reason: str
     ) -> dict:
+        room_id = session.room_id or ""
+        tick = self.get_room_tick(room_id)
+        combat = self.get_room_combat(room_id)
+
         players = []
         for s in self.sessions.values():
-            if s.room_id != session.room_id or s.client_id is None:
+            if s.room_id != room_id or s.client_id is None:
                 continue
             players.append(
                 {
@@ -87,8 +79,9 @@ class SnapshotBroadcastMixin:
                     "lastHitTick": s.last_hit_tick,
                 }
             )
+
         projectiles = []
-        for p in self.combat.projectiles.values():
+        for p in combat.projectiles.values():
             if not p.alive:
                 continue
             projectiles.append(
@@ -109,8 +102,9 @@ class SnapshotBroadcastMixin:
                     "effectIds": list(p.effect_ids),
                 }
             )
+
         loots = []
-        room_loots = self.get_room_loots(session.room_id or "")
+        room_loots = self.get_room_loots(room_id)
         for loot in room_loots.values():
             if not loot.alive:
                 continue
@@ -126,13 +120,15 @@ class SnapshotBroadcastMixin:
                     "landed": loot.landed,
                 }
             )
+
         events = []
-        for e in self.combat.pending_events:
+        for e in combat.pending_events:
             events.append(
                 {"eventType": e.event_type, "eventSeq": e.event_seq, "data": e.data}
             )
+
         return {
-            "tick": self.tick,
+            "tick": tick,
             "lastProcessedSeq": session.last_seq,
             "rejectReason": reject_reason,
             "players": players,
@@ -142,55 +138,36 @@ class SnapshotBroadcastMixin:
         }
 
     async def send_snapshot(
-    self: RelayServerContext,
-    websocket: Any,
-    session: ClientSession,
-    reject_reason: str,
-) -> None:
+        self: RelayServerContext,
+        websocket: Any,
+        session: ClientSession,
+        reject_reason: str,
+    ) -> None:
         snapshot = self.build_snapshot_payload(session, reject_reason)
-
-        payload_obj = {
-            "type": TYPE_SNAPSHOT,
-            "sessionId": session.session_id or "",
-            "roomId": session.room_id or "",
-            **snapshot,
-        }
-
-        encrypt_every_n = max(0, int(SNAPSHOT_ENCRYPT_EVERY_N))
-
-        # 0  = 全部明文
-        # 1  = 每个 SNAPSHOT 都加密
-        # 10 = 每 10 个 SNAPSHOT 加密一次
-        payload_encrypted = (
-        encrypt_every_n > 0
-        and self.tick % encrypt_every_n == 0
-    )
-
-        if payload_encrypted:
-            payload = self.encrypt_payload(session, payload_obj)
-        else:
-            payload = json.dumps(
-                payload_obj,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-
+        # 用 KcGs 加密 snapshot payload
+        encrypted = self.encrypt_payload(
+            session,
+            {
+                "type": TYPE_SNAPSHOT,
+                "sessionId": session.session_id or "",
+                "roomId": session.room_id or "",
+                **snapshot,
+            },
+        )
         response = {
-            "type": TYPE_SNAPSHOT,
-            "sessionId": session.session_id or "",
-            "roomId": session.room_id,
-            "payloadEncrypted": payload_encrypted,
-            "payload": payload,
-        }
-
+        "type": TYPE_SNAPSHOT,
+        "sessionId": session.session_id or "",
+        "roomId": session.room_id,
+        "payloadEncrypted": True,
+        "payload": encrypted,
+    }
         await websocket.send(json.dumps(response, ensure_ascii=False))
 
     async def broadcast_snapshot(
         self: RelayServerContext,
         room_id: str,
-        reject_reason_by_socket: Optional[Dict[Any, str]] = None,  # 按 websocket 指定 reject reason
+        reject_reason_by_socket: Optional[Dict[Any, str]] = None,
     ) -> None:
-        """并行广播快照给房间内所有在线玩家，使用 asyncio.gather 并发发送。"""
         peers = list(self.rooms.get(room_id, set()))
         tasks = []
         for peer in peers:
@@ -219,11 +196,7 @@ class SnapshotBroadcastMixin:
     # ═══════════════════════════════════════════════════════════════
 
     async def check_game_over(self: RelayServerContext, room_id: str) -> None:
-        """检测游戏是否结束——存活玩家数 ≤ 1 时触发结算。
-
-        同时统计在线玩家和重连宽限期内的离线玩家（断线玩家也应出现在结算中）。
-        游戏结束：状态 PLAYING→FINISHED，广播 RESULT，清理投射物/空投。
-        """
+        """检测是否仅剩 ≤1 名存活玩家，若是则广播 RESULT。"""
         if not room_id:
             return
         room_state = self.room_states.get(room_id)
@@ -232,7 +205,7 @@ class SnapshotBroadcastMixin:
         if room_state.get("status") != "PLAYING":
             return
         if room_state.get("gameOver"):
-            return  # 已结束，避免重复广播 RESULT
+            return
 
         # 统计存活玩家 (stocks > 0)
         alive_players: list[ClientSession] = []
@@ -323,17 +296,20 @@ class SnapshotBroadcastMixin:
                 },
             )
             await self.send_json(
-                peer,
-                {
-                    "type": TYPE_RESULT,
-                    "sessionId": session.session_id or "",
-                    "roomId": room_id,
-                    "payload": result_payload,
-                },
-            )
+        peer,
+        {
+            "type": TYPE_RESULT,
+            "sessionId": session.session_id or "",
+            "roomId": room_id,
+            "payloadEncrypted": True,
+            "payload": result_payload,
+        },
+)
 
-        # 清理对战状态
-        self.combat.clear_events()
+        # 清理当前房间的对战事件和掉落。
+        # 这里不立刻删除 room_ticks / room_combats，避免 RESULT 后补发 snapshot 找不到状态。
+        combat = self.get_room_combat(room_id)
+        combat.clear_events()
         self.room_loots.pop(room_id, None)
         self.room_next_loot_tick.pop(room_id, None)
 
