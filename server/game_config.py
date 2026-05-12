@@ -13,7 +13,7 @@ DEBUG_CONNECTION = True
 # 0  = SNAPSHOT 全部明文
 # 1  = 每个 SNAPSHOT 都加密
 # 10 = 每 10 个 SNAPSHOT 加密一次
-SNAPSHOT_ENCRYPT_EVERY_N = 0
+SNAPSHOT_ENCRYPT_EVERY_N = 100
 # game_combat 相关
 DEBUG_COMBAT_WARN = False
 DEBUG_ATTACK = False
@@ -31,7 +31,7 @@ SNAPSHOT_THROTTLE_ENABLED = True
 # 1 = 每 tick 广播
 # 2 = 每 2 tick 广播
 # 3 = 每 3 tick 广播
-SNAPSHOT_INTERVAL_TICKS = 2
+SNAPSHOT_INTERVAL_TICKS = 1
 
 # 是否遇到事件时强制立即广播。
 # 测带宽时建议 False。
