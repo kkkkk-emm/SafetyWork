@@ -1,6 +1,6 @@
 $env:AUTH_DB_HOST='172.27.143.193'
 $env:AUTH_DB_PORT='3306'
-$env:AUTH_DB_USER='root'
+$env:AUTH_DB_USER='game_user'
 $env:AUTH_DB_PASSWORD='811019lin'
 $env:AUTH_DB_NAME='SafetyWork'
 
