@@ -245,11 +245,11 @@ class AsServer:
             if msg_type not in SUPPORTED_AS_TYPES:
                 raise ProtocolError("UNSUPPORTED_TYPE")
             if msg_type == TYPE_REGISTER_REQ:
-                return self.handle_register_req(websocket, msg)
+                return self.handle_register_req(websocket, msg)  # 注册请求
             if msg_type == TYPE_AS_REQ:
-                return self.handle_as_req(websocket, msg)
+                return self.handle_as_req(websocket, msg)  # 登录请求
             if msg_type == TYPE_CHANGE_PASSWORD_REQ:
-                return self.handle_change_password_req(websocket, msg)
+                return self.handle_change_password_req(websocket, msg)  # 改密请求
             raise ProtocolError("UNSUPPORTED_TYPE")
         except ProtocolError as exc:
             return make_error(exc.error_code)
@@ -282,7 +282,7 @@ class AsServer:
             raise ProtocolError("INVALID_PAYLOAD")
         if self.as_private_pem is None:
             raise AsRequestError("KEY_NOT_CONFIGURED")
-        return rsa_decrypt_object(self.as_private_pem, payload)
+        return rsa_decrypt_object(self.as_private_pem, payload)  # 私钥解密
 
     def validate_username(self, username: str) -> str:
         """规范化并校验用户名。
@@ -398,7 +398,7 @@ class AsServer:
                     )
                     conn.commit()
                     raise AsRequestError("WEAK_PASSWORD")
-
+                # 生成随机盐值，计算新密码的哈希值，写入数据库
                 salt = generate_salt()
                 password_hash = derive_password_material(
                     password,
@@ -481,8 +481,8 @@ class AsServer:
         nonce = require_string_field(plain, "nonce")
 
         issued_ms = now_ms()
-        exp_ms = issued_ms + self.config.tgt_ttl_seconds * 1000
-        kc_tgs = generate_des_key()
+        exp_ms = issued_ms + self.config.tgt_ttl_seconds * 1000  # 计算 TGT 的过期时间
+        kc_tgs = generate_des_key()  # 生成 TGS 和 Client 的随机会话密钥
 
         with self.db.connection() as conn:
             try:
@@ -504,7 +504,7 @@ class AsServer:
 
                 user_id = int(user["user_id"])
                 login_gen_before = int(user["login_gen"])
-                if int(user["status"]) != 1:
+                if int(user["status"]) != 1:  # 检验用户状态，1 表示正常，0 表示禁用
                     self.record_event(
                         conn,
                         websocket,

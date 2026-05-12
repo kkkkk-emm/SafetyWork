@@ -58,7 +58,7 @@ class TgtContext:
     user_id: int
     username: str
     client_id: str
-    kc_tgs: bytes
+    kc_tgs: bytes   # C 和 TGS 共享的会话密钥，由 AS 生成
     login_gen: int
     exp_ms: int
 
@@ -172,7 +172,7 @@ class TgsServer:
     def handle_tgs_req(self, websocket: Any, msg: Dict[str, Any]) -> str:
         """处理 TGS_REQ 并签发 Service Ticket。"""
 
-        require_fields(msg, ("clientId", "ticket", "auth", "payload"))
+        require_fields(msg, ("clientId", "ticket", "auth", "payload"))  # 校验顶层字段
         client_id = require_string_field(msg, "clientId")
 
         if self.k_tgs is None or self.k_gs is None:
@@ -190,8 +190,8 @@ class TgsServer:
                     client_id,
                     reason="MISSING_TICKET",
                 )
-                tgt = self.decrypt_tgt_or_fail(conn, websocket, ticket, client_id)
-                ctx = self.validate_tgt_or_fail(conn, websocket, tgt, client_id)
+                tgt = self.decrypt_tgt_or_fail(conn, websocket, ticket, client_id)  # 解密 TGT
+                ctx = self.validate_tgt_or_fail(conn, websocket, tgt, client_id)    # 校验 TGT
 
                 if current_ms > ctx.exp_ms:
                     self.fail(
@@ -251,6 +251,7 @@ class TgsServer:
                     msg["auth"],
                     "AUTH_DECRYPT_FAILED",
                 )
+                # 验证认证器 auth 是否有效
                 auth_ts, auth_nonce = self.validate_authenticator_or_fail(
                     conn,
                     websocket,
@@ -289,6 +290,7 @@ class TgsServer:
                 kc_gs = generate_des_key()
                 kc_gs_b64 = b64encode(kc_gs)
 
+                # 生成 Service Ticket 和 payload
                 service_ticket = des_encrypt_object(
                     self.k_gs,
                     {
@@ -597,7 +599,7 @@ class TgsServer:
             )
             conn.commit()
             raise
-
+        
         if service != self.config.gs_service_name:
             self.fail(
                 conn,

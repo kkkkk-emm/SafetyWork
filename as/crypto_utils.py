@@ -79,7 +79,7 @@ def validate_password_policy(password: str) -> bool:
 def normalize_username(username: str) -> str:
     return username.strip().lower()
 
-
+# 派生密码材料，使用 PBKDF2-HMAC-SHA256
 def derive_password_material(password: str, salt: bytes, iterations: int) -> bytes:
     return hashlib.pbkdf2_hmac(
         "sha256",
@@ -89,7 +89,7 @@ def derive_password_material(password: str, salt: bytes, iterations: int) -> byt
         dklen=PASSWORD_HASH_BYTES,
     )
 
-
+# 派生 Kc, 取派生结果的前 8 字节作为 DES 密钥，用于 AS 和 Client 之间的加密
 def derive_kuser(password: str, salt: bytes, iterations: int) -> bytes:
     return derive_password_material(password, salt, iterations)[:DES_KEY_BYTES]
 
@@ -117,7 +117,7 @@ def _json_object(raw: bytes) -> Dict[str, Any]:
         raise CryptoError("INVALID_JSON_PLAINTEXT")
     return obj
 
-
+# 服务器加密入口，调用 cbc_encrypt 加密
 def des_encrypt_object(key: bytes, obj: Dict[str, Any]) -> str:
     if len(key) != DES_KEY_BYTES:
         raise CryptoError("INVALID_DES_KEY_LENGTH")
@@ -125,7 +125,7 @@ def des_encrypt_object(key: bytes, obj: Dict[str, Any]) -> str:
     ciphertext = cbc_encrypt(key, iv, _json_bytes(obj))
     return b64encode(iv + ciphertext)
 
-
+# 服务器解密入口，调用 cbc_decrypt 解密
 def des_decrypt_object(key: bytes, ciphertext_b64: str) -> Dict[str, Any]:
     if len(key) != DES_KEY_BYTES:
         raise CryptoError("INVALID_DES_KEY_LENGTH")
@@ -142,7 +142,7 @@ def des_decrypt_object(key: bytes, ciphertext_b64: str) -> Dict[str, Any]:
         raise CryptoError("INVALID_DES_PADDING") from exc
     return _json_object(plaintext)
 
-
+# 生成 RSA 密钥对
 def generate_rsa_key_pair(modulus_bits: int = 1024) -> Tuple[bytes, bytes]:
     keypair = generate_keypair(modulus_bits)
     return (
@@ -157,7 +157,7 @@ def validate_rsa_private_key(private_key_bytes: bytes) -> None:
     except Exception as exc:
         raise CryptoError("INVALID_RSA_PRIVATE_KEY") from exc
 
-
+# 服务器加密入口，调用 RSA 加密
 def rsa_encrypt_object(public_key_bytes: bytes, obj: Dict[str, Any]) -> str:
     try:
         public_key = deserialize_public_key(public_key_bytes)
@@ -166,7 +166,7 @@ def rsa_encrypt_object(public_key_bytes: bytes, obj: Dict[str, Any]) -> str:
     except Exception as exc:
         raise CryptoError("RSA_ENCRYPT_FAILED") from exc
 
-
+# 服务器解密入口，调用 RSA 解密
 def rsa_decrypt_object(private_key_bytes: bytes, ciphertext_b64: str) -> Dict[str, Any]:
     try:
         private_key = deserialize_private_key(private_key_bytes)
