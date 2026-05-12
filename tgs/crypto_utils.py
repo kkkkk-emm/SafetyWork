@@ -49,7 +49,7 @@ def _json_object(raw: bytes) -> Dict[str, Any]:
         raise CryptoError("INVALID_JSON_PLAINTEXT")
     return obj
 
-
+# 服务器加密入口，调用 cbc_encrypt 加密
 def des_encrypt_object(key: bytes, obj: Dict[str, Any]) -> str:
     if len(key) != DES_KEY_BYTES:
         raise CryptoError("INVALID_DES_KEY_LENGTH")
@@ -57,7 +57,7 @@ def des_encrypt_object(key: bytes, obj: Dict[str, Any]) -> str:
     ciphertext = cbc_encrypt(key, iv, _json_bytes(obj))
     return b64encode(iv + ciphertext)
 
-
+#  服务器解密入口，调用 cbc_decrypt 解密
 def des_decrypt_object(key: bytes, ciphertext_b64: str) -> Dict[str, Any]:
     if len(key) != DES_KEY_BYTES:
         raise CryptoError("INVALID_DES_KEY_LENGTH")

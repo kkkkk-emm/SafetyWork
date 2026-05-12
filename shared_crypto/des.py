@@ -303,7 +303,7 @@ def _left_rotate_28(value: int, shifts: int) -> int:
 
 
 def _generate_subkeys(key64: int) -> tuple[int, ...]:
-    key56 = _permute(key64, PC1_TABLE, 64)
+    key56 = _permute(key64, PC1_TABLE, 64)   # PC1 置换
     c = (key56 >> 28) & MASK_28
     d = key56 & MASK_28
     subkeys: list[int] = []
