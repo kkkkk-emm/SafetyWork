@@ -154,7 +154,7 @@ def decrypt_block(block: int, key: int) -> int:
         _subkey_cache_rev[key] = subkeys_rev
     return _des_core(block, subkeys_rev)
 
-
+# 填充
 def pkcs7_pad(data: bytes, block_size: int = DES_BLOCK_BYTES) -> bytes:
     if not 1 <= block_size <= 255:
         raise ValueError("block_size must be in range [1, 255]")
@@ -163,7 +163,7 @@ def pkcs7_pad(data: bytes, block_size: int = DES_BLOCK_BYTES) -> bytes:
         pad_len = block_size
     return data + bytes([pad_len]) * pad_len
 
-
+# 去填充
 def pkcs7_unpad(data: bytes, block_size: int = DES_BLOCK_BYTES) -> bytes:
     if not data or len(data) % block_size != 0:
         raise ValueError("invalid PKCS7 padded data length")
@@ -174,7 +174,7 @@ def pkcs7_unpad(data: bytes, block_size: int = DES_BLOCK_BYTES) -> bytes:
         raise ValueError("invalid PKCS7 padding")
     return data[:-pad_len]
 
-
+# cbc 加密入口
 def cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     _validate_key_iv(key, iv)
     key_int = int.from_bytes(key, "big")
@@ -194,7 +194,7 @@ def cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
 
     return bytes(output)
 
-
+# cbc 解密入口
 def cbc_decrypt(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
     _validate_key_iv(key, iv)
     if len(ciphertext) == 0 or len(ciphertext) % DES_BLOCK_BYTES != 0:
@@ -251,7 +251,7 @@ def _build_byte_perm_lut(table: tuple[int, ...], input_bits: int) -> list[list[i
     luts: list[list[int]] = []
     for byte_idx in range(num_bytes):
         lut = [0] * 256
-        # 确定这个字节覆盖的位范围 [low_bit, high_bit)
+        # 当前字节覆盖的位范围：[low_bit, high_bit)
         low_bit = input_bits - (byte_idx + 1) * 8
         high_bit = input_bits - byte_idx * 8
         if low_bit < 0:
@@ -262,7 +262,7 @@ def _build_byte_perm_lut(table: tuple[int, ...], input_bits: int) -> list[list[i
                 # src_bit 是 1-based 输入位位置
                 src_pos = input_bits - src_bit  # 转为 0-based 从高位
                 if low_bit <= src_pos < high_bit:
-                    # 该源位在本字节范围内
+                    # 该源位属于当前字节内
                     local_bit = src_pos - low_bit
                     if byte_val & (1 << local_bit):
                         result |= (1 << (out_bits - 1 - out_pos))

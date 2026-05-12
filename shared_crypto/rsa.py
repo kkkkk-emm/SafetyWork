@@ -31,21 +31,21 @@ class RSAKeyPair:
     public_key: PublicKey
     private_key: PrivateKey
 
-
+# 扩展欧几里得算法
 def egcd(a: int, b: int) -> tuple[int, int, int]:
     if b == 0:
         return a, 1, 0
     g, x1, y1 = egcd(b, a % b)
     return g, y1, x1 - (a // b) * y1
 
-
+# 模逆运算
 def mod_inverse(a: int, modulus: int) -> int:
     g, x, _ = egcd(a, modulus)
     if g != 1:
         raise ValueError("inverse does not exist")
     return x % modulus
 
-
+# 快速幂算法
 def qpow(base: int, exponent: int, modulus: int) -> int:
     if modulus <= 0:
         raise ValueError("modulus must be positive")
@@ -61,7 +61,7 @@ def qpow(base: int, exponent: int, modulus: int) -> int:
         exponent >>= 1
     return result
 
-
+# Miller-Rabin 素数测试
 def is_prime(n: int, rounds: int = DEFAULT_MILLER_RABIN_ROUNDS) -> bool:
     if n < 2:
         return False
@@ -95,7 +95,7 @@ def is_prime(n: int, rounds: int = DEFAULT_MILLER_RABIN_ROUNDS) -> bool:
             return False
     return True
 
-
+# 生成素数
 def generate_prime(bits: int) -> int:
     if bits < 8:
         raise ValueError("prime size must be at least 8 bits")
@@ -107,7 +107,7 @@ def generate_prime(bits: int) -> int:
         if is_prime(candidate):
             return candidate
 
-
+# 生成 RSA 密钥对
 def generate_keypair(modulus_bits: int = 1024) -> RSAKeyPair:
     if modulus_bits < 512:
         raise ValueError("RSA modulus must be at least 512 bits")
@@ -196,19 +196,19 @@ def max_plain_block_bytes(n: int) -> int:
 def cipher_block_bytes(n: int) -> int:
     return (n.bit_length() + 7) // 8
 
-
+# 加密整数
 def encrypt_int(message: int, public_key: PublicKey) -> int:
     if not 0 <= message < public_key.n:
         raise ValueError("RSA message integer out of range")
     return qpow(message, public_key.e, public_key.n)
 
-
+# 解密整数
 def decrypt_int(ciphertext: int, private_key: PrivateKey) -> int:
     if not 0 <= ciphertext < private_key.n:
         raise ValueError("RSA ciphertext integer out of range")
     return qpow(ciphertext, private_key.d, private_key.n)
 
-
+# 加密字节数据
 def encrypt_bytes(plaintext: bytes, public_key: PublicKey) -> dict[str, Any]:
     plain_block_size = max_plain_block_bytes(public_key.n)
     cipher_size = cipher_block_bytes(public_key.n)
@@ -236,7 +236,7 @@ def encrypt_bytes(plaintext: bytes, public_key: PublicKey) -> dict[str, Any]:
         "blocks": blocks,
     }
 
-
+# 解密字节数据
 def decrypt_bytes(envelope: dict[str, Any], private_key: PrivateKey) -> bytes:
     if envelope.get("type") != "RSA_RAW_BLOCKS":
         raise ValueError("invalid RSA ciphertext envelope")
