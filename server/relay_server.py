@@ -1247,10 +1247,10 @@ class RelayServer(
     # Cleanup / utils
     # ═══════════════════════════════════════════════════════════════
     async def invalidate_current_session(
-    self,
-    websocket: Any,
-    reason: str = "invalidate",
-) -> None:
+        self,
+        websocket: Any,
+        reason: str = "invalidate",
+    ) -> None:
         """
         废弃当前 websocket 上的旧 session，但不关闭 websocket。
         用于同一个连接重新 GS_AUTH，重新申请 sessionId。
@@ -1264,6 +1264,8 @@ class RelayServer(
         old_room_id = old_session.room_id
         old_client_id = old_session.client_id
         old_session_id = old_session.session_id
+
+        room_empty = False
 
         if old_room_id:
             try:
