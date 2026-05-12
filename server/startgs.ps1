@@ -9,6 +9,6 @@ $env:K_GS_BASE64='RYz5juaShC4='
 
 $env:GS_HOST='0.0.0.0'
 $env:GS_PORT='8765'
-$env:AUTH_GS_SERVICE_NAME='game/ws@127.0.0.1:8765'
+$env:AUTH_GS_SERVICE_NAME='game/ws@172.27.143.193:8765'
 
 python .\server\ws_server.py
