@@ -25,7 +25,6 @@ from gs_protocol import (
     TYPE_ROOM_START_REQ,
     TYPE_ROOM_START_REP,
     TYPE_ROOM_STATE,
-    require_fields,
     require_string_field,
 )
 from relay_contracts import RelayServerContext
@@ -214,7 +213,6 @@ class RoomLifecycleMixin:
         session = self._require_session(websocket)
 
         # 解密并校验 auth
-        require_fields(data, ("sessionId", "auth"))
         auth = self.decrypt_auth(session, data)
         if require_string_field(auth, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
@@ -270,8 +268,6 @@ class RoomLifecycleMixin:
 ) -> None:
         """处理 ROOM_JOIN_REQ：只能加入服务器内存中已经存在的指定房间。"""
         session = self._require_session(websocket)
-
-        require_fields(data, ("sessionId", "roomId", "auth"))
 
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
@@ -526,7 +522,6 @@ class RoomLifecycleMixin:
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
 
-        require_fields(data, ("sessionId", "roomId", "payload"))
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 
@@ -592,7 +587,6 @@ class RoomLifecycleMixin:
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
 
-        require_fields(data, ("sessionId", "roomId", "auth"))
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 

@@ -51,7 +51,6 @@ from gs_protocol import (
     TYPE_ROOM_READY_REQ,
     TYPE_ROOM_START_REQ,
     make_message,
-    require_fields,
     require_int_field,
     require_string_field,
 )
@@ -123,7 +122,7 @@ class RelayServer(
     async def run(self) -> None:
         """处理 RelayServer.run 相关的 GS 中继服务流程。"""
         self.db.ping()
-        self.load_runtime_keys()
+        self.load_runtime_keys() # 加载K_gs
         print("=" * 72)
         print(f"[SERVER] GS 游戏服务启动: ws://{self.host}:{self.port}")
         print(f"[SERVER] K_GS 已加载  gs_service={self.config.gs_service_name}")
@@ -191,6 +190,7 @@ class RelayServer(
 
         if msg_type == TYPE_GS_AUTH:
             if session.authenticated:
+                # 客户端重复发送了 GS_AUTH 消息
                 print(
                     f"[GS_AUTH_RENEW_REQ] "
                     f"oldSessionId={getattr(session, 'session_id', None)} "
@@ -280,7 +280,6 @@ class RelayServer(
     async def handle_gs_auth(self, websocket: Any, data: Dict[str, Any]) -> None:
         # GS_AUTH 是客户端进入游戏服务器的第一道门禁。
         # 这里要做三件事：校验票据、解密客户端认证器、创建已认证会话。
-        require_fields(data, ("clientId", "ticket", "auth"))
         client_id = require_string_field(data, "clientId")
         if self.k_gs is None:
             raise GsRequestError("KEY_NOT_CONFIGURED")
@@ -368,7 +367,6 @@ class RelayServer(
     async def handle_heartbeat(self, websocket: Any, data: Dict[str, Any]) -> None:
         """处理 RelayServer.handle_heartbeat 相关的 GS 中继服务流程。"""
         session = self._require_session(websocket)
-        require_fields(data, ("sessionId", "auth"))
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 
@@ -415,7 +413,6 @@ class RelayServer(
         5. 将旧 session 转移到新 websocket，玩家重新上线
         """
         # ── 参数校验 ──
-        require_fields(data, ("clientId", "sessionId", "ticket", "auth", "payload"))
         client_id = require_string_field(data, "clientId")
         session_id = require_string_field(data, "sessionId")
         if self.k_gs is None:
@@ -601,7 +598,7 @@ class RelayServer(
             sid
             for sid, info in self.reconnect_grace.items()
             if info["expire_ms"] <= current_ms
-        ]
+        ] # 找出所有过期的 sessionId
         for sid in expired_ids:
             info = self.reconnect_grace.pop(sid, None)
             if info is None:
@@ -904,8 +901,6 @@ class RelayServer(
             raise GsRequestError("NOT_IN_ROOM")
 
         room_id = session.room_id
-
-        require_fields(data, ("sessionId", "roomId", "payload"))
 
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
