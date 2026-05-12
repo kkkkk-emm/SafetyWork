@@ -13,6 +13,6 @@ $env:TGS_HOST='0.0.0.0'
 $env:TGS_PORT='9001'
 $env:AUTH_GS_SERVICE_NAME='game/ws@172.27.143.193:8765'
 Write-Host "TGS K_TGS_BASE64=[$env:K_TGS_BASE64]"
-python tgs_server.py
+py tgs_server.py
 
 # .\start_tgs.ps1
