@@ -95,11 +95,6 @@ class RelayServer(
         self.room_states: Dict[str, Dict[str, Any]] = {}
 
         # ── 对战 ──
-        # 兼容旧字段：不要再把它们作为正式对战运行态使用。
-        # 正式逻辑使用 room_ticks / room_combats，按 roomId 隔离。
-        self.tick: int = 0
-        self.combat = CombatRuntime()
-
         # 每个房间独立一套 tick 和 CombatRuntime，避免多房间同时战斗互相串状态。
         self.room_ticks: Dict[str, int] = {}
         self.room_combats: Dict[str, CombatRuntime] = {}
@@ -140,6 +135,9 @@ class RelayServer(
                 pass
 
     async def maintenance_loop(self) -> None:
+        """
+        维护循环，定期清理过期数据。
+        """
         while True:
             await asyncio.sleep(5)
             self.prune_replay_cache(now_ms())
@@ -767,6 +765,9 @@ class RelayServer(
         return result
 
     def reset_room_runtime_state(self, room_id: str) -> None:
+        """
+        重置房间运行时状态。
+        """
         if not room_id:
             return
 
@@ -808,6 +809,9 @@ class RelayServer(
         print(f"[ROOM RUNTIME RESET] room={room_id} tick=0")
 
     def cleanup_room_runtime_state(self, room_id: str) -> None:
+        """
+        清理房间运行时状态。
+        """
         if not room_id:
             return
 
@@ -874,11 +878,7 @@ class RelayServer(
             weapon_cfg.get("fire_interval_ticks", 10), 10
         )
 
-        wants_attack = False
-        if cmd.attack_pressed:
-            wants_attack = True
-        elif cmd.attack_held and auto_fire:
-            wants_attack = True
+        wants_attack = (cmd.attack_pressed) or (cmd.attack_held and auto_fire)
 
         if not wants_attack:
             return False
@@ -971,7 +971,7 @@ class RelayServer(
 
         cmd = self.parse_input_payload(payload)
 
-        # ── seq 连续性校验 (P0-3) ──
+        # 如果 seq 不是递增的，拒绝该输入
         if session.last_seq >= 0 and cmd.seq <= session.last_seq:
             reject_reason = f"seq not increasing: {cmd.seq} <= {session.last_seq}"
 
@@ -983,7 +983,7 @@ class RelayServer(
             await self.maybe_broadcast_snapshot(room_id, websocket, reject_reason)
             return
 
-        # ── 拒绝客户端上传服务端权威字段 (P1-4) ──
+        # 拒绝客户端上传服务端权威字段
         forbidden_keys = {
             "damagePercent",
             "stocks",
@@ -1017,6 +1017,7 @@ class RelayServer(
             session.accepted_grounded = False
             session.accepted_state = "Dead"
 
+            # 如果tick超过重生时间，并且玩家还有生命值，则复活
             if tick >= session.respawn_at_tick and session.stocks > 0:
                 respawn_point = RESPAWN_POINTS.get(
                     session.client_id,
@@ -1073,7 +1074,7 @@ class RelayServer(
         session.aim_x = cmd.aim_x
         session.aim_y = cmd.aim_y
 
-        if abs(cmd.aim_x) > 0.001:
+        if abs(cmd.aim_x) > 0.001: # 过滤浮点噪声，避免反复切换
             session.facing = 1 if cmd.aim_x > 0 else -1
         elif abs(cmd.move_x) > 0.001:
             session.facing = 1 if cmd.move_x > 0 else -1
@@ -1097,7 +1098,7 @@ class RelayServer(
 
             session.vel_x *= KNOCKBACK_DRAG_X
 
-            if abs(session.vel_x) < 0.03:
+            if abs(session.vel_x) < 0.03: # 处理浮点数精度问题
                 session.vel_x = 0.0
         else:
             session.vel_x = cmd.move_x * MOVE_SPEED
@@ -1153,8 +1154,8 @@ class RelayServer(
             else:
                 reject_reason = "超过最大跳跃次数"
 
-        # ── attack hold tracking ──
-        if in_hitstun:
+        # ── 攻击持握计数 ──
+        if in_hitstun: # 受击时不计数
             session.attack_hold_ticks = 0
         else:
             if cmd.attack_released:
@@ -1296,6 +1297,7 @@ class RelayServer(
             f"oldClient={old_client_id} "
             f"oldRoom={old_room_id}"
         )
+    
     async def cleanup_client(self, websocket: Any, reason: str) -> None:
         """处理 RelayServer.cleanup_client 相关的 GS 中继服务流程。"""
         session = self.sessions.get(websocket)
@@ -1357,6 +1359,9 @@ class RelayServer(
                 for cid in list(players.keys()):
                     if players[cid].get("websocket") is websocket:
                         players.pop(cid, None)
+                # 如果房间没有成员，直接删除房间状态
+                if not room_state["players"]:
+                    self.room_states.pop(old_room_id, None)
         if old_session is not None:
             old_session.room_id = None
             old_session.client_id = None
@@ -1371,6 +1376,7 @@ class RelayServer(
         print(
             f"[FORGET SOCKET] reason={reason} oldClient={old_client_id} sessions={len(self.sessions)}"
         )
+    
     @staticmethod
     def read_bool(value: Any, default: bool = False) -> bool:
         if value is None:
@@ -1391,22 +1397,17 @@ class RelayServer(
             return default
 
         return bool(value)
+    
     def remove_from_room(self, websocket: Any, room_id: str) -> None:
         """处理 RelayServer.remove_from_room 相关的 GS 中继服务流程。"""
         members = self.rooms.get(room_id)
-
         if not members:
             return
 
         members.discard(websocket)
-
+        # 清理空房间
         if not members:
             self.rooms.pop(room_id, None)
-
-            # 注意：
-            # 不要在这里 cleanup_room_runtime_state。
-            # 因为 PLAYING / STARTING 断线时还可能进入 reconnect grace，
-            # runtime 要保留给重连。
             print(f"[ROOM MEMBERS EMPTY] room={room_id}, runtime kept")
 
     async def send_error(self, websocket: Any, error_message: str) -> None:

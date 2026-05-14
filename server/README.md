@@ -113,18 +113,19 @@ python -c "import os,base64; print(base64.b64encode(os.urandom(8)).decode())"
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MOVE_SPEED` | 8.0 | 水平移动速度 (m/s)。 |
-| `JUMP_VELOCITY` | 10.0 | 起跳初速度 (m/s)。 |
+| `MOVE_SPEED` | 16.0 | 水平移动速度 (通过 MOVEMENT_MULTIPLIER=0.5 缩放)。 |
+| `JUMP_VELOCITY` | 15.0 | 起跳初速度 (通过 MOVEMENT_MULTIPLIER=0.5 缩放)。 |
 | `MAX_JUMP_COUNT` | 2 | 最大连跳次数。 |
 | `SIM_DT` | 1/30 | 物理模拟步长 (秒)。 |
 | `RECONNECT_GRACE_SECONDS` | 30 | 断线重连宽限期 (秒)。 |
 | `MATCH_COUNTDOWN_MS` | 3000 | 开始对战的倒计时 (毫秒)。 |
-| `SNAPSHOT_INTERVAL_TICKS` | 2 | 快照广播间隔 (tick 数)。 |
+| `SNAPSHOT_INTERVAL_TICKS` | 1 | 快照广播间隔 (tick 数)。 |
+| `SNAPSHOT_ENCRYPT_EVERY_N` | 100 | SNAPSHOT 加密频率（每 N tick 加密一次）。 |
 | `SNAPSHOT_THROTTLE_ENABLED` | `True` | 是否启用快照节流。 |
 | `SNAPSHOT_FORCE_BROADCAST_ON_EVENTS` | `False` | 事件发生时是否强制立即广播快照。 |
-| `LOOT_SPAWN_INTERVAL_TICKS` | 120 | 空投生成间隔。 |
+| `LOOT_SPAWN_INTERVAL_TICKS` | 60 (2s) | 空投生成间隔。 |
 | `LOOT_MAX_ALIVE` | 5 | 场上同时存在的最大空投数。 |
-| `RESPAWN_DELAY_TICKS` | 120 | 死亡后重生等待 tick 数。 |
+| `RESPAWN_DELAY_TICKS` | 60 (2s) | 死亡后重生等待 tick 数。 |
 
 ## 启动 GS
 
@@ -156,7 +157,7 @@ python .\server\ws_server.py
 ====================================================================
 [SERVER] GS 游戏服务启动: ws://0.0.0.0:8765
 [SERVER] K_GS 已加载  gs_service=game/ws@127.0.0.1:8765
-[SERVER] SIM_DT=0.016666666666666666 MOVE_SPEED=8.0
+[SERVER] SIM_DT=0.03333333333333333 MOVE_SPEED=16.0
 ====================================================================
 ```
 
@@ -270,7 +271,7 @@ GS 验证步骤：
 
 ### ROOM_STATE — 权威房间状态广播
 
-由 GS 主动推送，客户端不应自行推测房间成员。
+由 GS 主动推送，使用每个客户端各自的 `KcGs` 加密 payload，客户端不应自行推测房间成员。
 
 ```json
 {
@@ -405,6 +406,7 @@ GS 广播权威状态快照，客户端据此校正画面。
   "type": "SNAPSHOT",
   "sessionId": "sess-a-9001",
   "roomId": "A7K9Q2",
+  "payloadEncrypted": true,
   "payload": "Base64(DES(KcGs,{\"type\":\"SNAPSHOT\",\"sessionId\":\"sess-a-9001\",\"roomId\":\"A7K9Q2\",\"tick\":240,\"lastProcessedSeq\":101,\"rejectReason\":\"\",\"players\":[{...}],\"projectiles\":[{...}],\"loots\":[{...}],\"events\":[{...}],\"ts\":...,\"nonce\":...}))"
 }
 ```
@@ -423,8 +425,9 @@ SNAPSHOT 核心字段：
 
 快照广播策略：
 
-- 默认每 2 tick 广播一次（`SNAPSHOT_INTERVAL_TICKS = 2`）。
-- 当 `SNAPSHOT_FORCE_BROADCAST_ON_EVENTS = True` 时，有事件强制立即广播。
+- 默认每 1 tick 广播一次（`SNAPSHOT_INTERVAL_TICKS = 1`），可根据需要调高降频。
+- 当 `SNAPSHOT_FORCE_BROADCAST_ON_EVENTS = True` 时，有事件强制立即广播（当前默认 `False`）。
+- 加密策略由 `SNAPSHOT_ENCRYPT_EVERY_N` 控制（当前默认 `100`，即每 100 tick 加密一次）。
 - 可在 `game_config.py` 中调整。
 
 ---
@@ -466,6 +469,7 @@ SNAPSHOT 核心字段：
   "type": "RESULT",
   "sessionId": "sess-a-9001",
   "roomId": "A7K9Q2",
+  "payloadEncrypted": true,
   "payload": "Base64(DES(KcGs,{\"type\":\"RESULT\",\"sessionId\":\"sess-a-9001\",\"roomId\":\"A7K9Q2\",\"winnerUserId\":10001,\"reason\":\"STOCK_ZERO\",\"players\":[{\"userId\":10001,\"stocksLeft\":2,\"finalDamagePercent\":88.5},{\"userId\":10002,\"stocksLeft\":0,\"finalDamagePercent\":126.0}],\"ts\":...,\"nonce\":...}))"
 }
 ```
@@ -517,12 +521,9 @@ GS 广播 `RESULT` 后自动清理对战状态（投射物、空投、事件队�
 
 ---
 
-### 其他消息类型
+### LEAVE_ROOM — 主动离开房间
 
-| 类型 | 方向 | 说明 |
-| --- | --- | --- |
-| `CHAT` | 双向 | 房间内聊天，GS 广播给所有成员。需要 `sessionId` + `text`。 |
-| `LEAVE_ROOM` | 客户端 → GS | 主动离开房间，GS 清理玩家并广播更新后的 `ROOM_STATE`。 |
+客户端发送 `LEAVE_ROOM` 主动离开当前房间，GS 清理玩家并广播更新后的 `ROOM_STATE`。若离开后房间为空，同时清理房间运行时状态（ticks/combat/loots）。
 
 ## 常见错误
 

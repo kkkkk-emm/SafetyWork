@@ -20,7 +20,6 @@
 | `ROOM_READY_REQ` | `dispatch_authenticated_message()` -> `handle_ready()` | 切换 ready 状态；旧命名 `READY` 只在 `game_config.py` 中作为别名存在 |
 | `ROOM_START_REQ` | `dispatch_authenticated_message()` -> `handle_start_game()` | 房主请求开始对局 |
 | `INPUT` | `dispatch_authenticated_message()` -> `handle_input()` | 高频输入帧和服务端权威模拟 |
-| `CHAT` | 计划分支为 `handle_chat()` | 当前工作区存在实现风险，见 `CHAT` 小节 |
 | `LEAVE_ROOM` | `dispatch_authenticated_message()` -> `handle_leave_room()` | 主动离开房间 |
 
 出站或广播消息：
@@ -33,13 +32,13 @@
 | `ROOM_CREATE_REP` | `handle_create_room()` | 创建房间成功单播 |
 | `ROOM_JOIN_REP` | `handle_join_room()` | 加入房间成功单播 |
 | `ROOM_READY_REP` | `handle_ready()` | ready 状态更新成功单播 |
-| `ROOM_STATE` | `broadcast_room_state()` | 房间状态广播，每个客户端使用各自 `KcGs` 加密 payload |
-| `ROOM_START_REP` | `broadcast_game_start()` | 开局广播，包含 `sceneName`、`matchId`、`countdownMs` |
-| `SNAPSHOT` | `broadcast_snapshot()` / `send_snapshot()` | 对局快照广播 |
-| `RESULT` | `broadcast_result()` | 对局结束广播 |
+| `ROOM_STATE` | `broadcast_room_state()` | 房间状态广播，使用每个客户端各自 `KcGs` 加密 payload |
+| `ROOM_START_REP` | `broadcast_game_start()` | 开局广播，包含 `sceneName`、`matchId`、`countdownMs`，使用各自 `KcGs` 加密 |
+| `SNAPSHOT` | `broadcast_snapshot()` / `send_snapshot()` | 对局快照广播，`payloadEncrypted` 按 `SNAPSHOT_ENCRYPT_EVERY_N` 策略决定 |
+| `RESULT` | `broadcast_result()` | 对局结束广播，`payloadEncrypted: true` |
 | `ERROR` | `send_error()` | 统一错误回包 |
 
-注意：`server/game_config.py` 里仍有旧命名 `TYPE_CREATE_ROOM = "CREATE_ROOM"`、`TYPE_JOIN_ROOM = "JOIN_ROOM"`、`TYPE_READY = "READY"`、`TYPE_START_GAME = "START_GAME"`，但 `RelayServer.dispatch_authenticated_message()` 实际只按 `gs_protocol.py` 的 `ROOM_*_REQ` 分发。
+注意：`server/game_config.py` 中保留了旧命名别名（`TYPE_CREATE_ROOM = "CREATE_ROOM"`、`TYPE_JOIN_ROOM = "JOIN_ROOM"`、`TYPE_READY = "READY"`、`TYPE_START_GAME = "START_GAME"`），但这些仅用于 `GS_JSON_PAYLOAD_TYPES` 集合等兼容场景。`RelayServer.dispatch_authenticated_message()` 实际只按 `gs_protocol.py` 的 `ROOM_*_REQ` 分发，旧名称不会匹配到任何 handler。
 
 ### 0.2 消息路由入口
 
@@ -64,7 +63,7 @@ handle_message()
 ├─ json.loads(raw_message)
 ├─ msg_type = data["type"]
 ├─ if msg_type == GS_AUTH
-│  ├─ 已认证: 直接忽略重复 GS_AUTH
+│  ├─ 已认证: invalidate_current_session() 废弃旧session → 重新执行 handle_gs_auth()
 │  └─ 未认证: run_with_error_response("GS_AUTH", handle_gs_auth())
 ├─ if msg_type == RECONNECT_REQ
 │  └─ run_with_error_response("RECONNECT", handle_reconnect())
@@ -77,7 +76,6 @@ handle_message()
    ├─ ROOM_READY_REQ -> handle_ready()
    ├─ ROOM_START_REQ -> handle_start_game()
    ├─ INPUT -> handle_input()
-   ├─ CHAT -> handle_chat()
    ├─ LEAVE_ROOM -> handle_leave_room()
    └─ else -> send_error("UNSUPPORTED_TYPE: ...")
 ```
@@ -173,13 +171,24 @@ reconnect
 
 `auth` 解密后至少要求包含：`ts`、`nonce`。当前 `handle_gs_auth()` 不检查 `auth.type`。
 
+#### 重复 GS_AUTH 处理
+
+如果同一 websocket 已经认证过又发送 `GS_AUTH`，当前代码**不是直接忽略**，而是调用 `invalidate_current_session()` 废弃旧 session（清理旧房间成员关系、移除 `sessions_by_id`/`reconnect_grace` 映射、回退为未认证 `ClientSession`），然后再执行完整的新 GS_AUTH 流程。这意味着客户端可以在同一连接上"换号重登"。
+
 #### 调用链
 
 ```text
 handle_message()
+├─ 如果 session.authenticated
+│  └─ invalidate_current_session(websocket, reason="renew_gs_auth")
+│     ├─ remove_player_from_room_state()
+│     ├─ remove_from_room()
+│     ├─ 若房间变空: cleanup_room_runtime_state() + broadcast_room_state()
+│     ├─ sessions_by_id.pop(old_session_id)
+│     ├─ reconnect_grace.pop(old_session_id)
+│     └─ self.sessions[websocket] = ClientSession()  # 回退为未认证
 └─ run_with_error_response("GS_AUTH", handle_gs_auth())
    └─ handle_gs_auth()
-      ├─ require_fields(data, ("clientId", "ticket", "auth"))
       ├─ require_string_field(data, "clientId")
       ├─ self.db.connection()
       │  ├─ self.security.validate_service_ticket()
@@ -209,6 +218,7 @@ handle_message()
 #### 状态变更
 
 - `self.sessions[websocket]` 从临时未认证 `ClientSession` 变为已认证会话。
+- 若为重复 GS_AUTH，旧 session 的房间成员关系、`sessions_by_id` 映射、`reconnect_grace` 窗口均被清理。
 - `session.authenticated=True`。
 - `session.session_id` 被设置为新生成的 `sessionId`。
 - `session.user_id`、`session.username`、`session.kc_gs`、`session.login_gen`、`session.client_id` 从 ticket / 顶层字段写入。
@@ -379,9 +389,9 @@ handle_message()
 
 房间广播：
 
-- `_internal_join_room()` 内广播一次 `ROOM_STATE`。
+- `_internal_join_room()` 内广播一次 `ROOM_STATE`（使用各自 KcGs 加密 payload）。
 - `_internal_join_room()` 内广播一次 `SNAPSHOT`。
-- `handle_create_room()` 末尾再次广播 `ROOM_STATE`。
+- `handle_create_room()` 末尾再次广播 `ROOM_STATE`（使用各自 KcGs 加密 payload）。
 
 ### 1.4 `ROOM_JOIN_REQ`（旧名 `JOIN_ROOM`）
 
@@ -597,7 +607,7 @@ handle_message()
 1. `ROOM_STATE`：房间状态变为 `STARTING`。
 2. `ROOM_START_REP`：发给房间每个已认证在线成员。
 
-`ROOM_START_REP` 顶层：
+`ROOM_START_REP` 顶层（使用每个客户端各自 `KcGs` 加密）：
 
 ```json
 {
@@ -746,7 +756,8 @@ handle_message()
       ├─ check_game_over(room_id)
       │  └─ 可能 broadcast_result()
       └─ maybe_broadcast_snapshot(room_id, websocket, reject_reason)
-         ├─ 按 SNAPSHOT_INTERVAL_TICKS 节流
+         ├─ 按 SNAPSHOT_INTERVAL_TICKS 节流（默认 1，即每 tick 广播）
+         ├─ 若 SNAPSHOT_FORCE_BROADCAST_ON_EVENTS 且有事件，强制广播
          ├─ broadcast_snapshot()
          └─ combat.clear_events()
 ```
@@ -784,7 +795,7 @@ handle_message()
 
 #### 广播/响应
 
-`INPUT` 没有直接 ack。主要输出是房间 `SNAPSHOT`：
+`INPUT` 没有直接 ack。主要输出是房间 `SNAPSHOT`（带 `payloadEncrypted` 标记）：
 
 ```json
 {
@@ -796,7 +807,12 @@ handle_message()
 }
 ```
 
-如果对局结束，`check_game_over()` 会广播 `RESULT`：
+`payloadEncrypted` 取值规则（由 `SNAPSHOT_ENCRYPT_EVERY_N` 配置控制）：
+- `SNAPSHOT_ENCRYPT_EVERY_N = 0`：全部明文（`payloadEncrypted: false`，`payload` 为明文字符串）。
+- `SNAPSHOT_ENCRYPT_EVERY_N = 1`：每条都加密（`payloadEncrypted: true`）。
+- `SNAPSHOT_ENCRYPT_EVERY_N = N (N>1)`：每 N 条加密一次，其余明文。当前默认值 `100`。
+
+如果对局结束，`check_game_over()` 会广播 `RESULT`（带 `payloadEncrypted: true`）：
 
 ```json
 {
@@ -808,49 +824,17 @@ handle_message()
 }
 ```
 
-### 1.8 `CHAT`
+### 1.8 `CHAT`（已从当前代码中移除）
 
-#### 触发条件
+`CHAT` 消息类型已从当前代码中完全移除：
+- `server/gs_protocol.py` 中无 `TYPE_CHAT` 定义。
+- `server/game_config.py` 中无 `TYPE_CHAT` 导入。
+- `RelayServer.dispatch_authenticated_message()` 中无 `CHAT` 分支。
 
-计划中的顶层消息是：
-
-```json
-{
-  "type": "CHAT",
-  "sessionId": "sess-...",
-  "roomId": "AB12",
-  "payload": "..."
-}
-```
-
-但当前 `server/` 实现并没有完整支持。
-
-#### 调用链
-
-按 `relay_server.py` 的意图，调用链应为：
-
-```text
-handle_message()
-└─ dispatch_authenticated_message()
-   └─ if msg_type == TYPE_CHAT
-      └─ await self.handle_chat(websocket, data)
-```
-
-当前问题：
-
-1. 当前工作区的 `server/gs_protocol.py` 已删除 `TYPE_CHAT = "CHAT"`，但 `server/game_config.py` 仍有 `TYPE_CHAT = _gs_protocol.TYPE_CHAT`，`server/relay_server.py` 又从 `game_config.py` import `TYPE_CHAT`。因此当前工作区可能在 import 阶段就因缺少 `TYPE_CHAT` 失败。
-2. 即使恢复 `TYPE_CHAT = "CHAT"`，`RelayServer`、`RoomLifecycleMixin`、`SnapshotBroadcastMixin`、`LootManagerMixin` 中也没有定义 `handle_chat()`。如果路由进入该分支，会触发 `AttributeError`，被 `run_with_error_response()` 捕获并返回 `INTERNAL_ERROR`。
-
-#### 状态变更
-
-- 当前没有有效业务实现，因此不会修改 `self.rooms`、`self.room_states`、`self.sessions` 等状态。
-
-#### 广播/响应
-
-当前没有聊天广播实现。若 import 问题不存在但进入缺失 handler，客户端会收到：
+客户端发送 `type: "CHAT"` 会进入 `else` 分支，收到：
 
 ```json
-{"type":"ERROR","error":"INTERNAL_ERROR"}
+{"type":"ERROR","error":"UNSUPPORTED_TYPE: CHAT"}
 ```
 
 ### 1.9 `LEAVE_ROOM`
@@ -894,7 +878,7 @@ handle_message()
 
 - `self.room_states[room_id]["players"]` 移除当前玩家。
 - 若房主离开，`hostClientId` 顺延给剩余玩家中 `slotNo` 最小者。
-- 若房间无人，`self.room_states.pop(room_id)` 删除房间状态。
+- 若房间无人，`self.room_states.pop(room_id)` 删除房间状态，同时调用 `cleanup_room_runtime_state(room_id)` 清理 `room_ticks`、`room_combats`、`room_loots`、`room_next_loot_tick`。
 - `self.rooms[room_id]` 移除当前 websocket；空集合时删除 `self.rooms[room_id]`。
 - `session.room_id=None`，`session.client_id=None`。
 - 当前实现不清理 `self.sessions_by_id`，因为 socket 仍保持认证连接。
@@ -904,6 +888,7 @@ handle_message()
 - 没有单播 ack。
 - 对剩余房间成员广播 `ROOM_STATE`。
 - 如果房间已被删除，`broadcast_room_state(room_id)` 遍历不到 peers，通常不会发出消息。
+- 若房间因无人而删除，同时清理房间运行时状态（ticks/combat/loots）。
 
 ### 1.10 `RECONNECT_REQ`
 
