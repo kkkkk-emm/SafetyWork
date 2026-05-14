@@ -63,12 +63,6 @@ def get_weapon_bullet_id(weapon_cfg: dict) -> str:
     """读取并规范化 get_weapon_bullet_id 所需的战斗配置。"""
     return str(weapon_cfg.get("bullet_id", DEFAULT_BULLET_ID))
 
-
-def resolve_visual_id(bullet_id: str, bullet_cfg: dict) -> str:
-    """读取并规范化 resolve_visual_id 所需的战斗配置。"""
-    return str(bullet_cfg.get("visual_id", bullet_id))
-
-
 def normalize_special_bullet_id(bullet_id: str) -> str:
     """归一化特殊子弹 ID 别名——客户端可能传英文或驼峰名，统一为中文标准名。"""
     if bullet_id in ("sword_wave", "swordwave", "SwordWave"):

@@ -45,6 +45,7 @@ MAP_WALLS: List[RectCollider] = [
 
 def hits_wall(x: float, y: float) -> bool:
     """检测角色在 (x,y) 位置是否与地图墙壁重叠。AABB 重叠检测。"""
+    # 计算角色覆盖范围
     player_left = x - PLAYER_HALF_WIDTH
     player_right = x + PLAYER_HALF_WIDTH
     player_bottom = y

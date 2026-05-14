@@ -8,7 +8,7 @@
 """
 
 import json
-from typing import Any, Dict, Iterable
+from typing import Any, Dict
 
 
 # ── 规范定义的 GS 消息类型 ──────────────────────────────────────────
@@ -65,13 +65,6 @@ def make_message(msg_type: str, **fields: Any) -> str:
         if value is not None:
             msg[key] = value
     return dumps_json(msg)
-
-
-def require_fields(msg: Dict[str, Any], fields: Iterable[str]) -> None:
-    """校验顶层必需字段是否存在。"""
-    for field in fields:
-        if field not in msg or msg[field] in (None, ""):
-            raise ProtocolError("MISSING_FIELD")
 
 
 def require_string_field(obj: Dict[str, Any], field: str) -> str:

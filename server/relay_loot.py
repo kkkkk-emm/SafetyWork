@@ -94,7 +94,6 @@ class LootManagerMixin:
         next_tick = self.room_next_loot_tick.get(room_id)
 
         # 第一次进入 PLAYING 后，初始化下一次空投时间。
-        # 如果你想开局立刻掉空投，把这里改成 tick。
         if next_tick is None:
             self.room_next_loot_tick[room_id] = tick + LOOT_SPAWN_INTERVAL_TICKS
             print(
@@ -183,10 +182,12 @@ class LootManagerMixin:
         combat = self.get_room_combat(room_id)
 
         for loot in loots.values():
+            # 仅推进“存活且尚未落地”的空投；落地后保持静止，等待拾取或清理。
             if not loot.alive or loot.landed:
                 continue
 
             previous_y = loot.pos_y
+            # 每 tick 施加重力加速度，再用终端速度限制下落速度，避免单帧位移过大。
             loot.vel_y += LOOT_GRAVITY
 
             if loot.vel_y < LOOT_FALL_SPEED_CAP:
@@ -194,6 +195,7 @@ class LootManagerMixin:
 
             next_y = loot.pos_y + loot.vel_y * SIM_DT
 
+            # 使用“上一帧 y -> 下一帧 y”的跨帧区间做落台判定，防止高速下落穿过平台。
             landing_y = self.find_loot_landing_platform_y(
                 x=loot.pos_x,
                 previous_y=previous_y,
@@ -201,11 +203,13 @@ class LootManagerMixin:
             )
 
             if landing_y is not None:
+                # 命中平台后立即钉在平台表面，并清零竖直速度，后续不再参与下落积分。
                 loot.pos_y = landing_y
                 loot.vel_y = 0.0
                 loot.landed = True
                 loot.target_platform_y = landing_y
 
+                # 通过事件流广播“已落地”，驱动客户端表现与状态同步。
                 combat.push_event(
                     "LOOT_LANDED",
                     {
@@ -217,6 +221,7 @@ class LootManagerMixin:
                     },
                 )
             else:
+                # 未命中平台则提交本帧位置更新，继续自由下落。
                 loot.pos_y = next_y
 
     def check_loot_pickups_for_room(self: RelayServerContext, room_id: str) -> None:
@@ -231,6 +236,7 @@ class LootManagerMixin:
         combat = self.get_room_combat(room_id)
 
         for session in list(self.sessions.values()):
+            # 只允许当前房间、已完成身份绑定且存活的玩家参与拾取判定。
             if (
                 session.room_id != room_id
                 or session.client_id is None
@@ -238,26 +244,34 @@ class LootManagerMixin:
             ):
                 continue
 
+            # 用玩家身体中心近似拾取点，减少贴地/跳跃时的体感误差。
             player_center_y = session.pos_y + 0.4
 
             for loot in list(loots.values()):
+                # 已被拾取或标记失效的空投不再参与判定。
                 if not loot.alive:
                     continue
 
+                # 当配置要求“仅落地可拾取”时，空中空投直接跳过。
                 if LOOT_PICKUP_ONLY_WHEN_LANDED and not loot.landed:
                     continue
 
+                # 使用平方距离比较避免开方，降低每 tick 多玩家多道具的计算开销。
                 dx = session.pos_x - loot.pos_x
                 dy = player_center_y - loot.pos_y
                 dist_sq = dx * dx + dy * dy
+
+                # 取道具半径与全局最小拾取半径的较大值，保证不同道具手感一致。
                 pickup_radius = max(loot.radius, LOOT_PICKUP_RADIUS)
 
                 if dist_sq > pickup_radius * pickup_radius:
                     continue
 
+                # 命中拾取范围后立刻应用奖励并置为失效，防止同帧被重复拾取。
                 self.apply_loot_to_session(session, loot)
                 loot.alive = False
 
+                # 通过事件广播拾取结果，让客户端同步移除道具并更新展示。
                 combat.push_event(
                     "LOOT_PICKED",
                     {
@@ -273,7 +287,7 @@ class LootManagerMixin:
     def apply_loot_to_session(
         self: RelayServerContext, session: ClientSession, loot: ServerLoot
     ) -> None:
-        """处理 LootManagerMixin.apply_loot_to_session 相关的道具生成、拾取或清理逻辑。"""
+        """将道具效果应用到玩家会话。"""
         if loot.loot_type == "effect":
             if (
                 not hasattr(session, "equipped_effect_ids")
@@ -291,7 +305,3 @@ class LootManagerMixin:
         dead_ids = [lid for lid, loot in loots.items() if not loot.alive]
         for lid in dead_ids:
             loots.pop(lid, None)
-
-    # ═══════════════════════════════════════════════════════════════
-    # Physics delegates (unchanged)
-    # ═══════════════════════════════════════════════════════════════

@@ -157,8 +157,7 @@ class GsSecurityService:
                 raise GsRequestError("INVALID_TICKET")
             if (
                 require_service
-                and require_string_field(raw_ticket, "service")
-                != self.config.gs_service_name
+                and require_string_field(raw_ticket, "service") != self.config.gs_service_name
             ):
                 raise GsRequestError("INVALID_TICKET")  # 票据是给其他 GS 的，拒绝
             if require_string_field(raw_ticket, "clientId") != client_id:

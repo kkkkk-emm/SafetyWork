@@ -34,8 +34,6 @@ SNAPSHOT_THROTTLE_ENABLED = True
 SNAPSHOT_INTERVAL_TICKS = 1
 
 # 是否遇到事件时强制立即广播。
-# 测带宽时建议 False。
-# 如果你发现命中/拾取/爆炸事件延迟明显，可以改 True。
 SNAPSHOT_FORCE_BROADCAST_ON_EVENTS = False
 
 
@@ -50,7 +48,7 @@ PLAYER_HALF_WIDTH = 0.46   # 玩家碰撞半宽
 PLAYER_HALF_HEIGHT = 0.42  # 玩家碰撞半高
 
 # ── 运动参数（统一走 MOVEMENT_MULTIPLIER 缩放，方便整体调手感）──
-SIM_DT = 1.0 / 30.0        # 模拟步长 = 30FPS
+SIM_DT = 1.0 / 30.0        # 帧数 = 30FPS
 MOVE_SPEED = 32.0 * MOVEMENT_MULTIPLIER  # 水平移速
 
 GRAVITY = -2.0 * MOVEMENT_MULTIPLIER     # 重力加速度（每帧累加到 vel_y）
