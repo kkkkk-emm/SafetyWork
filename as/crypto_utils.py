@@ -65,6 +65,7 @@ def generate_salt() -> bytes:
 
 
 def validate_password_policy(password: str) -> bool:
+    # 密码必须至少 8 字符，且包含大小写字母和数字
     if len(password) < PASSWORD_MIN_LENGTH:
         return False
     if re.search(r"[A-Z]", password) is None:
@@ -89,7 +90,7 @@ def derive_password_material(password: str, salt: bytes, iterations: int) -> byt
         dklen=PASSWORD_HASH_BYTES,
     )
 
-# 派生 Kc, 取派生结果的前 8 字节作为 DES 密钥，用于 AS 和 Client 之间的加密
+# 派生 Kuser, 取派生结果的前 8 字节作为 DES 密钥，用于 AS 和 Client 之间的加密
 def derive_kuser(password: str, salt: bytes, iterations: int) -> bytes:
     return derive_password_material(password, salt, iterations)[:DES_KEY_BYTES]
 
@@ -150,7 +151,7 @@ def generate_rsa_key_pair(modulus_bits: int = 1024) -> Tuple[bytes, bytes]:
         serialize_public_key(keypair.public_key),
     )
 
-
+# 验证 RSA 私钥是否有效
 def validate_rsa_private_key(private_key_bytes: bytes) -> None:
     try:
         deserialize_private_key(private_key_bytes)

@@ -31,14 +31,14 @@ class RSAKeyPair:
     public_key: PublicKey
     private_key: PrivateKey
 
-# 扩展欧几里得算法
+# 扩展欧几里得算法(a*x + b*y = gcd(a, b))
 def egcd(a: int, b: int) -> tuple[int, int, int]:
     if b == 0:
         return a, 1, 0
     g, x1, y1 = egcd(b, a % b)
     return g, y1, x1 - (a // b) * y1
 
-# 模逆运算
+# 模逆运算（a*x ≡ 1 (mod n)）
 def mod_inverse(a: int, modulus: int) -> int:
     g, x, _ = egcd(a, modulus)
     if g != 1:
@@ -75,7 +75,7 @@ def is_prime(n: int, rounds: int = DEFAULT_MILLER_RABIN_ROUNDS) -> bool:
             return True
         if n % prime == 0:
             return False
-
+    # 将 n-1 表示为 2^s * d，其中 d 是奇数
     d = n - 1
     s = 0
     while d % 2 == 0:
@@ -83,7 +83,7 @@ def is_prime(n: int, rounds: int = DEFAULT_MILLER_RABIN_ROUNDS) -> bool:
         d //= 2
 
     for _ in range(rounds):
-        a = secrets.randbelow(n - 3) + 2
+        a = secrets.randbelow(n - 3) + 2  # 随机底数 a ∈ [2, n-2]
         x = qpow(a, d, n)
         if x == 1 or x == n - 1:
             continue
@@ -185,14 +185,14 @@ def deserialize_private_key(raw: bytes | str) -> PrivateKey:
         raise ValueError("invalid RSA private key phi")
     return key
 
-
+# 求 RSA 模数 n 的最大明文块大小
 def max_plain_block_bytes(n: int) -> int:
     block_size = (n.bit_length() - 1) // 8
     if block_size <= 0:
         raise ValueError("invalid RSA modulus")
     return block_size
 
-
+# 求 RSA 密文块大小
 def cipher_block_bytes(n: int) -> int:
     return (n.bit_length() + 7) // 8
 
@@ -289,7 +289,7 @@ def _json_loads(raw: bytes | str) -> dict[str, Any]:
         raise ValueError("expected JSON object")
     return data
 
-
+# 从 JSON 对象中提取正整数字段
 def _positive_int(data: dict[str, Any], key: str) -> int:
     value = data.get(key)
     if isinstance(value, str):

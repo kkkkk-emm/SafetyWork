@@ -192,7 +192,7 @@ class TgsServer:
                 )
                 tgt = self.decrypt_tgt_or_fail(conn, websocket, ticket, client_id)  # 解密 TGT
                 ctx = self.validate_tgt_or_fail(conn, websocket, tgt, client_id)    # 校验 TGT
-
+                # 校验 TGT 是否过期
                 if current_ms > ctx.exp_ms:
                     self.fail(
                         conn,
@@ -230,7 +230,7 @@ class TgsServer:
                         client_id=client_id,
                         reason="ACCOUNT_DISABLED",
                     )
-
+                # 校验 login_gen 和 username
                 if int(user["login_gen"]) != ctx.login_gen or db_username != ctx.username:
                     self.fail(
                         conn,

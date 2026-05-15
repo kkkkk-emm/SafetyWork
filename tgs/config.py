@@ -80,8 +80,8 @@ def load_tgs_config() -> TgsConfig:
     )
     #  记得修改为对应服务器的 GS 地址和服务名，格式为 service_name@host:port
     gs_service_name = (
-        os.getenv("AUTH_GS_SERVICE_NAME", "game/ws@172.27.143.193:8765").strip()
-        or "game/ws@172.27.143.193:8765"
+        os.getenv("AUTH_GS_SERVICE_NAME", "game/ws@172.27.25.176:8765").strip()
+        or "game/ws@172.27.25.176:8765"
     )
     return TgsConfig(
         host=os.getenv("TGS_HOST", "0.0.0.0").strip() or "0.0.0.0",
