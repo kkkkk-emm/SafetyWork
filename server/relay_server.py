@@ -1254,17 +1254,20 @@ class RelayServer(
         old_session = self.sessions.get(websocket)
 
         if old_session is None:
+            # 这个连接上还没有会话时，先补一个空会话，避免后续逻辑再判空。
             self.sessions[websocket] = ClientSession()
             return
 
+        # 先取出旧会话的房间 / 客户端 / sessionId，后面清理映射时会用到。
         old_room_id = old_session.room_id
         old_client_id = old_session.client_id
         old_session_id = old_session.session_id
 
         room_empty = False
 
-        if old_room_id:
+        if old_room_id is not None:
             try:
+                # 先从房间状态里移除玩家，避免旧会话残留为在线成员。
                 await self.remove_player_from_room_state(websocket, old_room_id)
             except Exception as exc:
                 print(
@@ -1272,12 +1275,16 @@ class RelayServer(
                     f"remove_player_from_room_state failed: {exc}"
                 )
 
+            # 再从房间成员集合里删掉这个 websocket。
             self.remove_from_room(websocket, old_room_id)
+            # 如果房间已经没人了，就需要顺手清掉房间运行时状态。
             room_empty = old_room_id not in self.rooms or not self.rooms.get(old_room_id)
 
-        if room_empty:
+        if room_empty and old_room_id is not None:
+            # 房间为空时，清理 tick / combat / loot 等运行时缓存，避免幽灵状态。
             self.cleanup_room_runtime_state(old_room_id)
             try:
+                # 通知外部观察者房间状态已经变化。
                 await self.broadcast_room_state(old_room_id)
             except Exception as exc:
                 print(
@@ -1286,9 +1293,11 @@ class RelayServer(
                 )
 
         if old_session_id:
+            # 旧 sessionId 失效后，必须同步从各个反查表中移除。
             self.sessions_by_id.pop(old_session_id, None)
             self.reconnect_grace.pop(old_session_id, None)
 
+        # 最后用一个全新的 ClientSession 覆盖旧会话，保持 websocket 连接不变。
         self.sessions[websocket] = ClientSession()
 
         print(

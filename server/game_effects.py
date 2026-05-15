@@ -376,7 +376,7 @@ def execute_sword_wave(
 ) -> None:
     """处理 execute_sword_wave 相关的战斗效果逻辑。"""
     mag = (aim_x * aim_x + aim_y * aim_y) ** 0.5
-
+    
     if mag <= 0.0001:
         aim_x = 1.0 if attacker.facing >= 0 else -1.0
         aim_y = 0.0

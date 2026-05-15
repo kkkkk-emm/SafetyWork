@@ -30,8 +30,6 @@ from game_config import (
 )
 from game_debug import debug_print
 
-# Debug switches are optional.
-# If game_config.py has not defined them yet, these defaults will be used.
 try:
     from game_config import (
         DEBUG_COMBAT_WARN,
