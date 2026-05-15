@@ -17,7 +17,6 @@ from game_combat_config import (
     get_bullet_cfg as resolve_bullet_cfg,
     get_weapon_bullet_id as resolve_weapon_bullet_id,
     get_weapon_cfg as resolve_weapon_cfg,
-    normalize_special_bullet_id as normalize_bullet_alias,
 )
 from game_config import (
     MELEE_DB,
@@ -86,10 +85,6 @@ class CombatRuntime:
     def get_weapon_bullet_id(self, weapon_cfg: dict) -> str:
         """处理 CombatRuntime.get_weapon_bullet_id 相关的战斗模拟、命中或事件逻辑。"""
         return resolve_weapon_bullet_id(weapon_cfg)
-
-    def normalize_special_bullet_id(self, bullet_id: str) -> str:
-        """处理 CombatRuntime.normalize_special_bullet_id 相关的战斗模拟、命中或事件逻辑。"""
-        return normalize_bullet_alias(bullet_id)
 
     # ------------------------------------------------------------------
     # Events
@@ -194,7 +189,6 @@ class CombatRuntime:
 
         weapon_cfg = self.get_weapon_cfg(owner.equipped_weapon_id)
         bullet_id = self.get_weapon_bullet_id(weapon_cfg)
-        bullet_id = self.normalize_special_bullet_id(bullet_id)
 
         bullet_cfg = self.get_bullet_cfg(bullet_id)
 
@@ -380,7 +374,6 @@ class CombatRuntime:
         if not bullet_id:
             bullet_id = weapon_id
 
-        bullet_id = self.normalize_special_bullet_id(bullet_id)
         bullet_cfg = self.get_bullet_cfg(bullet_id)
         if len(self.projectiles) >= MAX_PROJECTILES:
             return
