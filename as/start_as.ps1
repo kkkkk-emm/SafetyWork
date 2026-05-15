@@ -1,4 +1,4 @@
-$env:AUTH_DB_HOST='172.27.144.173'
+$env:AUTH_DB_HOST='172.27.25.176'
 $env:AUTH_DB_USER='game_user'
 $env:AUTH_DB_PASSWORD='811019lin'
 $env:AUTH_DB_NAME='SafetyWork'
