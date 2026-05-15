@@ -402,7 +402,7 @@ class RelayServer(
 
     async def handle_reconnect(self, websocket: Any, data: Dict[str, Any]) -> None:
         """处理客户端重连请求。
-        
+
         重连流程：
         1. 客户端在连接断开后，有有限时间窗口可以用旧 sessionId 重新连接
         2. 需要重新校验 ticket，但这次不需要 ServiceTicket 中的 service 和 kc 字段
@@ -1297,7 +1297,7 @@ class RelayServer(
             f"oldClient={old_client_id} "
             f"oldRoom={old_room_id}"
         )
-    
+
     async def cleanup_client(self, websocket: Any, reason: str) -> None:
         """处理 RelayServer.cleanup_client 相关的 GS 中继服务流程。"""
         session = self.sessions.get(websocket)
@@ -1376,7 +1376,7 @@ class RelayServer(
         print(
             f"[FORGET SOCKET] reason={reason} oldClient={old_client_id} sessions={len(self.sessions)}"
         )
-    
+
     @staticmethod
     def read_bool(value: Any, default: bool = False) -> bool:
         if value is None:
@@ -1397,7 +1397,7 @@ class RelayServer(
             return default
 
         return bool(value)
-    
+
     def remove_from_room(self, websocket: Any, room_id: str) -> None:
         """处理 RelayServer.remove_from_room 相关的 GS 中继服务流程。"""
         members = self.rooms.get(room_id)

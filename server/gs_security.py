@@ -169,7 +169,7 @@ class GsSecurityService:
             exp = read_int(raw_ticket, "exp")
             if user_id <= 0 or login_gen < 0 or exp <= 0:
                 raise GsRequestError("INVALID_TICKET")
-            
+
             kc_gs = None
             if require_kc:
                 # GS_AUTH 必须带 KcGs；后续会话加密完全依赖这里解出的会话密钥。
@@ -302,7 +302,7 @@ class GsSecurityService:
         # payload/auth 中的 nonce 也走同一套重放检测，防止会话内请求被复制重放。
         user_id = getattr(session, "user_id", None)
         client_id = getattr(session, "client_id", None)
-        if user_id is None or not client_id:
+        if user_id is None:
             raise GsRequestError("SESSION_MISMATCH")
         if not self.replay_guard.check_and_store(
             user_id=int(user_id),
