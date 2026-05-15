@@ -119,7 +119,6 @@ LOOT_GRAVITY = -0.04
 LOOT_FALL_SPEED_CAP = -2.0
 
 # 空投中心落在平台上方多少
-# 你的 loot sprite 如果中心在箱子中心，这里一般 0.45~0.7
 LOOT_HALF_HEIGHT = 0.4
 
 # 平台边缘安全距离，避免刚好落到边缘
@@ -152,7 +151,6 @@ LOOT_TYPE_WEIGHTS = {
 }
 # -----------------------------
 # Spawn / Respawn points
-# 注意：这里是服务器逻辑坐标，pos_y 是 footY，不是 Unity transform centerY
 # -----------------------------
 SPAWN_POINTS = {
     "Client1": {
@@ -216,7 +214,6 @@ WEAPON_DB = {
 
 # -----------------------------
 # Melee hitbox config
-# 第一版：近战用“前方圆形 hitbox + 短存活”
 # -----------------------------
 MELEE_DB = {
     "短剑": {

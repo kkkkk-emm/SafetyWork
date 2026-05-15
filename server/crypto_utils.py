@@ -1,4 +1,3 @@
-"""Crypto helpers for GS using project-local handwritten DES code."""
 
 from __future__ import annotations
 
