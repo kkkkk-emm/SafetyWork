@@ -955,7 +955,7 @@ class CombatRuntime:
 
             # ------------------------------------------------------------
             # 2) effects before move
-            # 比如 hover_split 
+            # 比如 hover_split
             # ------------------------------------------------------------
 
             game_effects.apply_projectile_effects_before_move(

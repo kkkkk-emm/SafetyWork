@@ -97,7 +97,7 @@ class GsDao:
                 """
                 INSERT INTO security_event_log
                     (user_id, username, event_type, result,
-                     client_id, remote_addr, reason)
+                    client_id, remote_addr, reason)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (

@@ -351,9 +351,9 @@ class RoomLifecycleMixin:
         1. 退出旧房间（如有）
         2. 创建或获取房间状态（首次创建时 host=Client1）
         3. 分配 slot/ClientId：
-           - CREATE_HOST → Client1, slot=1（房主）
-           - WAITING 状态 → 分配空闲 slot（1 或 2），满员返回 ROOM_FULL
-           - 非 WAITING 状态（重连） → 必须明确指定 Client1 或 Client2
+            - CREATE_HOST → Client1, slot=1（房主）
+            - WAITING 状态 → 分配空闲 slot（1 或 2），满员返回 ROOM_FULL
+            - 非 WAITING 状态（重连） → 必须明确指定 Client1 或 Client2
         4. 清理旧 websocket/幽灵 session（同一 ClientId 的旧连接被踢出）
         5. 初始化 session 的游戏状态（位置、命数、武器等）
         6. 广播房间状态 + 快照
