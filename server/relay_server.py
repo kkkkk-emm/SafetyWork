@@ -81,6 +81,7 @@ class RelayServer(
         # ── session 管理 ──
         self.sessions: Dict[Any, ClientSession] = {}  # websocket -> ClientSession
         self.sessions_by_id: Dict[str, ClientSession] = {}  # sessionId -> ClientSession
+        self.sessions_by_user_id: Dict[int, Any] = {}  # userId -> websocket
 
         # ── 防重放缓存: key = "{userId}/{clientId}/{nonce}" -> expires_at_ms ──
         self.replay_cache: Dict[str, int] = {}
@@ -317,6 +318,7 @@ class RelayServer(
             auth_ts = require_int_field(auth, "ts")
             auth_nonce = require_string_field(auth, "nonce")
             self._expire_reconnect_grace(current_ms)
+            await self._disconnect_existing_user_session(ticket.user_id, websocket)
 
             session_id = f"sess-{ticket.user_id}-{generate_nonce()[:8]}"
             session = self.sessions.get(websocket)
@@ -333,6 +335,7 @@ class RelayServer(
             session.client_id = client_id
 
             self.sessions_by_id[session_id] = session
+            self.sessions_by_user_id[ticket.user_id] = websocket
             self.security.record_success(
                 conn,
                 context,
@@ -474,6 +477,13 @@ class RelayServer(
             auth_ts = require_int_field(auth, "ts")
             auth_nonce = require_string_field(auth, "nonce")
             self._expire_reconnect_grace(current_ms)
+            if old_session.user_id is not None:
+                existing_websocket = self.sessions_by_user_id.get(old_session.user_id)
+                if (
+                    existing_websocket is not None
+                    and existing_websocket is not websocket
+                ):
+                    raise GsRequestError("ACCOUNT_LOGGED_IN_ELSEWHERE")
 
             # ── 解密 payload（业务数据） ──
             # payload 中包含客户端最后一次成功处理的 INPUT seq，
@@ -511,6 +521,8 @@ class RelayServer(
             # 把旧会话关联到新的 websocket（新连接）。
             self.sessions[websocket] = old_session
             self.sessions_by_id[session_id] = old_session
+            if old_session.user_id is not None:
+                self.sessions_by_user_id[old_session.user_id] = websocket
 
             # ── 更新房间状态：玩家重新上线 ──
             self.rooms.setdefault(room_id, set()).add(websocket)
@@ -1242,6 +1254,31 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
     # Cleanup / utils
     # ═══════════════════════════════════════════════════════════════
+    def _unbind_user_session(
+        self, websocket: Any, session: Optional[ClientSession]
+    ) -> None:
+        if session is None or session.user_id is None:
+            return
+        if self.sessions_by_user_id.get(session.user_id) is websocket:
+            self.sessions_by_user_id.pop(session.user_id, None)
+
+    async def _disconnect_existing_user_session(
+        self, user_id: int, current_websocket: Any
+    ) -> None:
+        old_websocket = self.sessions_by_user_id.get(user_id)
+        if old_websocket is None or old_websocket is current_websocket:
+            return
+
+        old_session = self.sessions.get(old_websocket)
+        if old_session is None or old_session.user_id != user_id:
+            self.sessions_by_user_id.pop(user_id, None)
+            return
+
+        await self.send_error(old_websocket, "ACCOUNT_LOGGED_IN_ELSEWHERE")
+        await self.close_and_forget_socket(
+            old_websocket, reason="account_logged_in_elsewhere"
+        )
+
     async def invalidate_current_session(
         self,
         websocket: Any,
@@ -1297,6 +1334,8 @@ class RelayServer(
             self.sessions_by_id.pop(old_session_id, None)
             self.reconnect_grace.pop(old_session_id, None)
 
+        self._unbind_user_session(websocket, old_session)
+
         # 最后用一个全新的 ClientSession 覆盖旧会话，保持 websocket 连接不变。
         self.sessions[websocket] = ClientSession()
 
@@ -1325,6 +1364,7 @@ class RelayServer(
             if is_playing:
                 # 对局中断线保留 sessionId，给客户端重连窗口；非对局状态则直接清房间。
                 self.remove_from_room(websocket, room_id)
+                self._unbind_user_session(websocket, session)
                 self.sessions.pop(websocket, None)
                 self._enter_reconnect_grace(session)
                 print(
@@ -1344,6 +1384,7 @@ class RelayServer(
         if session.session_id:
             self.sessions_by_id.pop(session.session_id, None)
             self.reconnect_grace.pop(session.session_id, None)
+        self._unbind_user_session(websocket, session)
         self.sessions.pop(websocket, None)
         print(
             f"[CLEANUP] client={client_id} room={room_id} reason={reason} sessions={len(self.sessions)}"
@@ -1368,15 +1409,22 @@ class RelayServer(
                 for cid in list(players.keys()):
                     if players[cid].get("websocket") is websocket:
                         players.pop(cid, None)
+                if room_state.get("hostClientId") == old_client_id:
+                    remaining = list(players.values())
+                    if remaining:
+                        remaining.sort(key=lambda p: int(p["slotNo"]))
+                        room_state["hostClientId"] = remaining[0]["clientId"]
                 # 如果房间没有成员，直接删除房间状态
                 if not room_state["players"]:
                     self.room_states.pop(old_room_id, None)
         if old_session is not None:
+            self._unbind_user_session(websocket, old_session)
             old_session.room_id = None
             old_session.client_id = None
             old_session.last_seq = -1
         if old_session_id:
             self.sessions_by_id.pop(old_session_id, None)
+            self.reconnect_grace.pop(old_session_id, None)
         self.sessions.pop(websocket, None)
         try:
             await websocket.close(code=4000, reason=reason)
