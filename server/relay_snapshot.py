@@ -200,6 +200,9 @@ class SnapshotBroadcastMixin:
         room_id: str,
         reject_reason_by_socket: Optional[Dict[Any, str]] = None,
     ) -> None:
+        """
+        广播游戏快照给房间内的所有玩家。
+        """
         peers = list(self.rooms.get(room_id, set()))
         tasks = []
         for peer in peers:
@@ -328,15 +331,15 @@ class SnapshotBroadcastMixin:
                 },
             )
             await self.send_json(
-        peer,
-        {
-            "type": TYPE_RESULT,
-            "sessionId": session.session_id or "",
-            "roomId": room_id,
-            "payloadEncrypted": True,
-            "payload": result_payload,
-        },
-)
+                peer,
+                {
+                    "type": TYPE_RESULT,
+                    "sessionId": session.session_id or "",
+                    "roomId": room_id,
+                    "payloadEncrypted": True,
+                    "payload": result_payload,
+                },
+            )
 
         # 清理当前房间的对战事件和掉落。
         # 这里不立刻删除 room_ticks / room_combats，避免 RESULT 后补发 snapshot 找不到状态。

@@ -25,7 +25,6 @@ from gs_protocol import (
     TYPE_ROOM_START_REQ,
     TYPE_ROOM_START_REP,
     TYPE_ROOM_STATE,
-    require_fields,
     require_string_field,
 )
 from relay_contracts import RelayServerContext
@@ -214,19 +213,9 @@ class RoomLifecycleMixin:
         session = self._require_session(websocket)
 
         # 解密并校验 auth
-        require_fields(data, ("sessionId", "auth"))
         auth = self.decrypt_auth(session, data)
         if require_string_field(auth, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
-
-        # 一个 session 只能在一个房间，先退出旧房间
-        if session.room_id:
-            old_room_id = session.room_id
-            await self.remove_player_from_room_state(websocket, old_room_id)
-            self.remove_from_room(websocket, old_room_id)
-            session.room_id = None
-            session.client_id = None
-            await self.broadcast_room_state(old_room_id)
 
         room_id = self.generate_room_id()
         # 房主自动以 Client1 身份加入，共用 _internal_join_room 逻辑
@@ -266,12 +255,10 @@ class RoomLifecycleMixin:
     # ═══════════════════════════════════════════════════════════════
 
     async def handle_join_room(
-    self: RelayServerContext, websocket: Any, data: Dict[str, Any]
-) -> None:
+        self: RelayServerContext, websocket: Any, data: Dict[str, Any]
+    ) -> None:
         """处理 ROOM_JOIN_REQ：只能加入服务器内存中已经存在的指定房间。"""
         session = self._require_session(websocket)
-
-        require_fields(data, ("sessionId", "roomId", "auth"))
 
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
@@ -299,11 +286,7 @@ class RoomLifecycleMixin:
         if require_string_field(auth, "type") != TYPE_ROOM_JOIN_REQ:
             raise GsRequestError("TYPE_MISMATCH")
 
-        # ============================================================
-        # 关键新增：
-        # 手动加入指定房间时，房间必须已经存在于服务器内存。
-        # 不允许 _internal_join_room 通过 get_or_create_room_state 自动创建。
-        # ============================================================
+        # 房间不存在
         if room_id not in self.rooms or room_id not in self.room_states:
             print(
                 f"[JOIN REJECT] ROOM_NOT_FOUND "
@@ -313,16 +296,8 @@ class RoomLifecycleMixin:
             )
             raise GsRequestError("ROOM_NOT_FOUND")
 
-        room_state = self.room_states.get(room_id)
-        members = self.rooms.get(room_id)
-
-        if room_state is None or members is None:
-            print(
-                f"[JOIN REJECT] ROOM_NOT_FOUND incomplete state "
-                f"room={room_id}"
-            )
-            raise GsRequestError("ROOM_NOT_FOUND")
-
+        room_state = self.room_states[room_id]
+        members = self.rooms[room_id]
         status = str(room_state.get("status", "WAITING")).upper()
 
         # 已经开始/结算的房间不允许普通 JOIN
@@ -333,7 +308,7 @@ class RoomLifecycleMixin:
             )
             raise GsRequestError("ROOM_NOT_JOINABLE")
 
-        # 你的规则是最多 2 人
+        # 最多 2 人
         if len(members) >= 2:
             print(f"[JOIN REJECT] ROOM_FULL room={room_id}")
             raise GsRequestError("ROOM_FULL")
@@ -376,9 +351,9 @@ class RoomLifecycleMixin:
         1. 退出旧房间（如有）
         2. 创建或获取房间状态（首次创建时 host=Client1）
         3. 分配 slot/ClientId：
-           - CREATE_HOST → Client1, slot=1（房主）
-           - WAITING 状态 → 分配空闲 slot（1 或 2），满员返回 ROOM_FULL
-           - 非 WAITING 状态（重连） → 必须明确指定 Client1 或 Client2
+            - CREATE_HOST → Client1, slot=1（房主）
+            - WAITING 状态 → 分配空闲 slot（1 或 2），满员返回 ROOM_FULL
+            - 非 WAITING 状态（重连） → 必须明确指定 Client1 或 Client2
         4. 清理旧 websocket/幽灵 session（同一 ClientId 的旧连接被踢出）
         5. 初始化 session 的游戏状态（位置、命数、武器等）
         6. 广播房间状态 + 快照
@@ -399,6 +374,7 @@ class RoomLifecycleMixin:
             self.remove_from_room(websocket, old_room_id)
             session.room_id = None
             session.client_id = None
+            await self.broadcast_room_state(old_room_id)
 
         # JOIN 不存在的房间直接拒绝，防止用 JOIN 变相创建房间
         is_create_host = requested_client_id == "CREATE_HOST"
@@ -440,7 +416,7 @@ class RoomLifecycleMixin:
                     old_ws, reason=f"replaced by {assigned_client_id}"
                 )
 
-        # 防御：清理同一 room+clientId 的幽灵 session（异常断线遗留的旧连接）
+        # 清理同一 room+clientId 的幽灵 session（异常断线遗留的旧连接）
         for other_ws, other_session in list(self.sessions.items()):
             if other_ws is websocket:
                 continue
@@ -526,7 +502,6 @@ class RoomLifecycleMixin:
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
 
-        require_fields(data, ("sessionId", "roomId", "payload"))
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 
@@ -592,7 +567,6 @@ class RoomLifecycleMixin:
         if not session.room_id or not session.client_id:
             raise GsRequestError("NOT_IN_ROOM")
 
-        require_fields(data, ("sessionId", "roomId", "auth"))
         if require_string_field(data, "sessionId") != session.session_id:
             raise GsRequestError("SESSION_MISMATCH")
 
@@ -641,10 +615,10 @@ class RoomLifecycleMixin:
         if session is None or not session.room_id:
             return
         room_id = session.room_id
-        await self.remove_player_from_room_state(websocket, room_id)
-        self.remove_from_room(websocket, room_id)
+        await self.remove_player_from_room_state(websocket, room_id) # 清理room_state
+        self.remove_from_room(websocket, room_id) # 清理room
 
-        room_empty = room_id not in self.rooms or not self.rooms.get(room_id)
+        room_empty = not self.rooms.get(room_id)
 
         if room_empty:
             self.cleanup_room_runtime_state(room_id)
@@ -663,10 +637,7 @@ class RoomLifecycleMixin:
         if session is None or room_state is None:
             return
         client_id = session.client_id
-        if client_id in room_state["players"]:
-            if room_state["players"][client_id].get("websocket") is websocket:
-                room_state["players"].pop(client_id, None)
-        # 防御：清理该 websocket 可能挂载的其他 clientId（异常状态残留）
+        # 清理该 websocket 可能挂载的所有 clientId
         for cid in list(room_state["players"].keys()):
             if room_state["players"][cid].get("websocket") is websocket:
                 room_state["players"].pop(cid, None)

@@ -34,8 +34,6 @@ SNAPSHOT_THROTTLE_ENABLED = True
 SNAPSHOT_INTERVAL_TICKS = 1
 
 # 是否遇到事件时强制立即广播。
-# 测带宽时建议 False。
-# 如果你发现命中/拾取/爆炸事件延迟明显，可以改 True。
 SNAPSHOT_FORCE_BROADCAST_ON_EVENTS = False
 
 
@@ -50,7 +48,7 @@ PLAYER_HALF_WIDTH = 0.46   # 玩家碰撞半宽
 PLAYER_HALF_HEIGHT = 0.42  # 玩家碰撞半高
 
 # ── 运动参数（统一走 MOVEMENT_MULTIPLIER 缩放，方便整体调手感）──
-SIM_DT = 1.0 / 30.0        # 模拟步长 = 30FPS
+SIM_DT = 1.0 / 30.0        # 帧数 = 30FPS
 MOVE_SPEED = 32.0 * MOVEMENT_MULTIPLIER  # 水平移速
 
 GRAVITY = -2.0 * MOVEMENT_MULTIPLIER     # 重力加速度（每帧累加到 vel_y）
@@ -121,7 +119,6 @@ LOOT_GRAVITY = -0.04
 LOOT_FALL_SPEED_CAP = -2.0
 
 # 空投中心落在平台上方多少
-# 你的 loot sprite 如果中心在箱子中心，这里一般 0.45~0.7
 LOOT_HALF_HEIGHT = 0.4
 
 # 平台边缘安全距离，避免刚好落到边缘
@@ -154,7 +151,6 @@ LOOT_TYPE_WEIGHTS = {
 }
 # -----------------------------
 # Spawn / Respawn points
-# 注意：这里是服务器逻辑坐标，pos_y 是 footY，不是 Unity transform centerY
 # -----------------------------
 SPAWN_POINTS = {
     "Client1": {
@@ -218,7 +214,6 @@ WEAPON_DB = {
 
 # -----------------------------
 # Melee hitbox config
-# 第一版：近战用“前方圆形 hitbox + 短存活”
 # -----------------------------
 MELEE_DB = {
     "短剑": {

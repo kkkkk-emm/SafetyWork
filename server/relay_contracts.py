@@ -15,13 +15,21 @@ class RelayServerContext(Protocol):
     room_states: Dict[str, Dict[str, Any]]
     room_loots: Dict[str, Dict[str, ServerLoot]]
     room_next_loot_tick: Dict[str, int]
-    tick: int
-    combat: Any
     next_loot_id: int
+    room_ticks: Dict[str, int]
+    room_combats: Dict[str, Any]
     db: Any
 
     def encrypt_payload(self, session: ClientSession, obj: Dict[str, Any]) -> str:
         """使用会话密钥加密要返回给该客户端的业务载荷。"""
+        ...
+
+    def get_room_tick(self, room_id: str) -> int:
+        """获取指定房间的当前 tick。"""
+        ...
+
+    def get_room_combat(self, room_id: str) -> Any:
+        """获取指定房间的战斗状态。"""
         ...
 
     def decrypt_auth(
@@ -162,3 +170,8 @@ class RelayServerContext(Protocol):
     def utc_now_iso() -> str:
         """返回当前 UTC 时间的 ISO 字符串。"""
         ...
+
+    def cleanup_room_runtime_state(self, room_id: str) -> None:
+        """清理房间运行时状态。"""
+        ...
+

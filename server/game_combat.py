@@ -17,8 +17,6 @@ from game_combat_config import (
     get_bullet_cfg as resolve_bullet_cfg,
     get_weapon_bullet_id as resolve_weapon_bullet_id,
     get_weapon_cfg as resolve_weapon_cfg,
-    normalize_special_bullet_id as normalize_bullet_alias,
-    resolve_visual_id as resolve_bullet_visual_id,
 )
 from game_config import (
     MELEE_DB,
@@ -32,8 +30,6 @@ from game_config import (
 )
 from game_debug import debug_print
 
-# Debug switches are optional.
-# If game_config.py has not defined them yet, these defaults will be used.
 try:
     from game_config import (
         DEBUG_COMBAT_WARN,
@@ -87,14 +83,6 @@ class CombatRuntime:
     def get_weapon_bullet_id(self, weapon_cfg: dict) -> str:
         """处理 CombatRuntime.get_weapon_bullet_id 相关的战斗模拟、命中或事件逻辑。"""
         return resolve_weapon_bullet_id(weapon_cfg)
-
-    def resolve_visual_id(self, bullet_id: str, bullet_cfg: dict) -> str:
-        """处理 CombatRuntime.resolve_visual_id 相关的战斗模拟、命中或事件逻辑。"""
-        return resolve_bullet_visual_id(bullet_id, bullet_cfg)
-
-    def normalize_special_bullet_id(self, bullet_id: str) -> str:
-        """处理 CombatRuntime.normalize_special_bullet_id 相关的战斗模拟、命中或事件逻辑。"""
-        return normalize_bullet_alias(bullet_id)
 
     # ------------------------------------------------------------------
     # Events
@@ -199,7 +187,6 @@ class CombatRuntime:
 
         weapon_cfg = self.get_weapon_cfg(owner.equipped_weapon_id)
         bullet_id = self.get_weapon_bullet_id(weapon_cfg)
-        bullet_id = self.normalize_special_bullet_id(bullet_id)
 
         bullet_cfg = self.get_bullet_cfg(bullet_id)
 
@@ -262,7 +249,7 @@ class CombatRuntime:
         bullet_id: str,
         bullet_cfg: dict,
     ) -> None:
-        """处理 CombatRuntime._spawn_one_projectile 相关的战斗模拟、命中或事件逻辑。"""
+        """设置投射物属性"""
         speed = float(bullet_cfg.get("speed", weapon_cfg.get("projectile_speed", 18.0)))
         radius = float(
             bullet_cfg.get("radius", weapon_cfg.get("projectile_radius", 0.2))
@@ -283,7 +270,7 @@ class CombatRuntime:
             )
         )
 
-        visual_id = self.resolve_visual_id(bullet_id, bullet_cfg)
+        visual_id = bullet_cfg.get("visual_id", bullet_id)
 
         spawn_forward = float(
             bullet_cfg.get(
@@ -385,12 +372,11 @@ class CombatRuntime:
         if not bullet_id:
             bullet_id = weapon_id
 
-        bullet_id = self.normalize_special_bullet_id(bullet_id)
         bullet_cfg = self.get_bullet_cfg(bullet_id)
         if len(self.projectiles) >= MAX_PROJECTILES:
             return
         if not visual_id:
-            visual_id = self.resolve_visual_id(bullet_id, bullet_cfg)
+            visual_id = bullet_cfg.get("visual_id", bullet_id)
 
         if rotation_deg is None:
             if abs(vel_x) <= 0.0001 and abs(vel_y) <= 0.0001:
@@ -411,11 +397,10 @@ class CombatRuntime:
             damage=damage,
             base_knockback=base_knockback,
             ttl=ttl,
+            bullet_id=bullet_id,
+            visual_id=visual_id,
+            rotation_deg=rotation_deg,
         )
-
-        proj.bullet_id = bullet_id
-        proj.visual_id = visual_id
-        proj.rotation_deg = rotation_deg
 
         self.projectiles[proj.proj_id] = proj
         self.next_projectile_id += 1
@@ -467,7 +452,6 @@ class CombatRuntime:
         """处理 CombatRuntime.spawn_melee_hitbox 相关的战斗模拟、命中或事件逻辑。"""
         # 先根据近战配置名查表。
         # 如果配置不存在，或者攻击者还没有绑定 client_id，就直接放弃生成。
-        # 这样可以避免生成一个没有来源、没有归属的无效近战判定框。
         cfg = MELEE_DB.get(melee_profile)
         if cfg is None or attacker.client_id is None:
             debug_print(
@@ -562,43 +546,57 @@ class CombatRuntime:
         top: float,
     ) -> bool:
         """线段 (x1,y1)→(x2,y2) 是否与轴对齐矩形相交。"""
+        # 线段在 x / y 两个方向上的位移量。
         dx = x2 - x1
         dy = y2 - y1
 
+        # 记录这条线段在“进入矩形”与“离开矩形”之间允许的时间区间。
+        # 初始时先假设整条线段都可用，再逐步用 x / y 约束收缩。
         t_min = 0.0
         t_max = 1.0
 
+        # x 方向几乎没有移动时，说明线段必须本来就在左右边界之间，
+        # 否则不可能和矩形相交。
         if abs(dx) < 0.000001:
             if x1 < left or x1 > right:
                 return False
         else:
+            # 计算线段与矩形左边界 / 右边界相交时对应的参数 t。
             inv_dx = 1.0 / dx
             t1 = (left - x1) * inv_dx
             t2 = (right - x1) * inv_dx
 
+            # 保证 t1 是进入点，t2 是离开点。
             if t1 > t2:
                 t1, t2 = t2, t1
 
+            # 用 x 方向的约束收缩可行区间。
             t_min = max(t_min, t1)
             t_max = min(t_max, t2)
 
+            # 如果 x 方向的可行区间已经空了，就一定没碰到。
             if t_min > t_max:
                 return False
 
+        # y 方向和 x 方向同理：先看有没有横跨上下边界。
         if abs(dy) < 0.000001:
             if y1 < bottom or y1 > top:
                 return False
         else:
+            # 计算线段与矩形下边界 / 上边界相交时对应的参数 t。
             inv_dy = 1.0 / dy
             t1 = (bottom - y1) * inv_dy
             t2 = (top - y1) * inv_dy
 
+            # 保证 t1 是进入点，t2 是离开点。
             if t1 > t2:
                 t1, t2 = t2, t1
 
+            # 再用 y 方向的约束收缩可行区间。
             t_min = max(t_min, t1)
             t_max = min(t_max, t2)
 
+            # x / y 两个方向的可行区间没有交集，说明线段没穿过矩形。
             if t_min > t_max:
                 return False
 
@@ -661,7 +659,7 @@ class CombatRuntime:
         radius: float,
         owner_client_id: str,
     ) -> Optional[ClientSession]:
-        """处理 CombatRuntime.find_projectile_swept_hit_player 相关的战斗模拟、命中或事件逻辑。"""
+        """查找被投射物扫中玩家会话。"""
         for session in sessions.values():
             if session.client_id is None:
                 continue
@@ -705,7 +703,9 @@ class CombatRuntime:
         sessions: Dict[object, ClientSession],
         client_id: str,
     ) -> Optional[ClientSession]:
-        """处理 CombatRuntime.find_session_by_client_id 相关的战斗模拟、命中或事件逻辑。"""
+        """
+        根据客户端ID查找对应的会话。
+        """
         for session in sessions.values():
             if session.client_id == client_id:
                 return session
@@ -720,7 +720,7 @@ class CombatRuntime:
         radius: float,
         ignore_client_id: Optional[str] = None,
     ) -> List[ClientSession]:
-        """处理 CombatRuntime.find_players_in_radius 相关的战斗模拟、命中或事件逻辑。"""
+        """在指定半径内查找玩家会话。"""
         result: List[ClientSession] = []
         rr = radius * radius
 
@@ -746,7 +746,7 @@ class CombatRuntime:
         radius: float,
         ignore_owner_client_id: Optional[str] = None,
     ) -> List[ServerProjectile]:
-        """处理 CombatRuntime.find_projectiles_in_radius 相关的战斗模拟、命中或事件逻辑。"""
+        """在指定半径内查找投射物。"""
         result: List[ServerProjectile] = []
         rr = radius * radius
 
@@ -757,7 +757,7 @@ class CombatRuntime:
             if (
                 ignore_owner_client_id is not None
                 and proj.owner_client_id == ignore_owner_client_id
-            ):
+            ): # 自己的子弹不会击中自己
                 continue
 
             dx = proj.pos_x - center_x
@@ -787,7 +787,7 @@ class CombatRuntime:
         weapon_id: str,
         tick: int,
     ) -> None:
-        """处理 CombatRuntime.apply_hit 相关的战斗模拟、命中或事件逻辑。"""
+        """应用击中效果。"""
         if target.is_dead:
             return
 
@@ -832,7 +832,7 @@ class CombatRuntime:
         knockback_x = knockback_dir_x * final_force
         knockback_y = knockback_dir_y * final_force
 
-        # 伤害百分比只增不减（服务端权威，客户端不可写入）
+        # 伤害百分比只增不减
         target.damage_percent = damage_before_hit + final_damage
 
         # 受击硬直 tick 数 = 基础固定值 + 伤害比例加成（百分比越高硬直越久）
@@ -841,7 +841,7 @@ class CombatRuntime:
         )
         hitstun_ticks = max(HITSTUN_BASE_TICKS, hitstun_ticks)
 
-        # ── 服务端权威状态覆写（客户端无法通过 INPUT 伪造这些值）──
+        # ── 服务端权威状态覆写 ──
         target.vel_x = knockback_x
         target.vel_y = knockback_y
 
@@ -946,7 +946,7 @@ class CombatRuntime:
 
             # ------------------------------------------------------------
             # 2) effects before move
-            # 比如 hover_split 减速
+            # 比如 hover_split
             # ------------------------------------------------------------
 
             game_effects.apply_projectile_effects_before_move(

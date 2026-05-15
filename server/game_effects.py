@@ -54,7 +54,7 @@ def apply_effects_on_projectile_spawned(
     """
     子弹生成时初始化 effect runtime state。
 
-    HoverSplit 在 Unity 原版里是：
+    HoverSplit：
     - 记录初始速度
     - slowDuration 内 Lerp 到 0
     - 然后分裂
@@ -142,13 +142,11 @@ def apply_projectile_effects_before_move(
     """
     子弹飞行前：
     - hover_split 线性减速到 0
-
-    注意：
-    原 Unity 版不是 vel *= 0.92，而是：
-    rb.linearVelocity = Vector2.Lerp(startVelocity, Vector2.zero, timer / slowDuration)
     """
+    # 先把效果 ID 归一化，避免同一个效果因为别名写法不同而漏处理。
     proj.effect_ids = normalize_effect_list(proj.effect_ids)
 
+    # 这里只处理挂在 on_projectile_spawned 钩子上的投射物效果。
     for effect_id in proj.effect_ids:
         cfg = EFFECT_DB.get(effect_id)
         if cfg is None:
@@ -158,13 +156,16 @@ def apply_projectile_effects_before_move(
             continue
 
         if effect_id == "hover_split":
+            # slow_duration 决定从“初始速度”线性减到 0 需要多久。
             slow_duration = max(0.0001, _cfg_float(cfg, "slow_duration"))
 
+            # 分裂已经完成后，就不再继续减速或重复初始化。
             if proj.hover_split_done:
                 continue
 
             if not proj.hover_split_initialized:
-                # 保险：如果某颗子弹是旧逻辑生成，没走 apply_effects_on_projectile_spawned，也能初始化。
+                # 如果某颗子弹是旧逻辑生成，没走 apply_effects_on_projectile_spawned，也能初始化。
+                # 记录出生时的速度，后面每一帧都以它为基准做线性插值。
                 proj.hover_split_initialized = True
                 proj.hover_split_start_vel_x = proj.vel_x
                 proj.hover_split_start_vel_y = proj.vel_y
@@ -172,6 +173,7 @@ def apply_projectile_effects_before_move(
                 speed = (proj.vel_x * proj.vel_x + proj.vel_y * proj.vel_y) ** 0.5
                 proj.hover_split_start_speed = speed
 
+                # 记录初始方向，供后续分裂时恢复原始飞行朝向。
                 if speed > 0.0001:
                     proj.hover_split_base_dir_x = proj.vel_x / speed
                     proj.hover_split_base_dir_y = proj.vel_y / speed
@@ -179,14 +181,17 @@ def apply_projectile_effects_before_move(
                     proj.hover_split_base_dir_x = 1.0
                     proj.hover_split_base_dir_y = 0.0
 
+            # t 从 0 增长到 1，表示减速过程已经走了多少比例。
             t = min(1.0, proj.timer / slow_duration)
 
             start_vx = proj.hover_split_start_vel_x
             start_vy = proj.hover_split_start_vel_y
 
+            # 线性插值：从初始速度逐步拉到 0。
             proj.vel_x = start_vx * (1.0 - t)
             proj.vel_y = start_vy * (1.0 - t)
 
+            # 速度有变化时，顺便更新朝向角，保证视觉和运动方向一致。
             if abs(proj.vel_x) > 0.0001 or abs(proj.vel_y) > 0.0001:
                 proj.rotation_deg = (
                     atan2(proj.vel_y, proj.vel_x) * 180.0 / 3.141592653589793
@@ -323,7 +328,6 @@ def apply_effects_on_projectile_player_hit(
 
 def execute_parry(combat_runtime, sessions, attacker, cfg: EffectConfig) -> None:
     """
-    第一版简化：
     攻击瞬间检查附近 projectile 并反弹。
     """
     radius = 1.2
@@ -372,7 +376,7 @@ def execute_sword_wave(
 ) -> None:
     """处理 execute_sword_wave 相关的战斗效果逻辑。"""
     mag = (aim_x * aim_x + aim_y * aim_y) ** 0.5
-
+    
     if mag <= 0.0001:
         aim_x = 1.0 if attacker.facing >= 0 else -1.0
         aim_y = 0.0

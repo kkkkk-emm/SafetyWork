@@ -1,8 +1,3 @@
-"""效果 ID 归一化——将客户端可能传来的不同写法映射到服务端标准名。
-
-客户端可能传驼峰名（Effect_HoverSplit）、小写无下划线（hoversplit）、或标准名（hover_split）。
-统一归一化为蛇形标准名，并在列表中自动去重。
-"""
 
 from __future__ import annotations
 
