@@ -123,8 +123,6 @@ WebSocket 文本帧内容都是 UTF-8 JSON。当前 GS 协议顶层通常复用�
 客户端 `GsAuthOkPayload` 类还声明了 `ok/clientId/sessionId/error`，但当前 GS 服务端没有填这些字段。
 
 ### RECONNECT_REQ
-### RECONNECT_REQ
-
 客户端发送：
 
 ```json

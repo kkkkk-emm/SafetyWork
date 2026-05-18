@@ -340,6 +340,7 @@ class RelayServer(
             )
             conn.commit()
 
+        print("###########################################何坤良################################################")
         # 回给客户端一个用 KcGs 加密的响应，证明服务端也完成了认证流程。
         protected_payload = des_encrypt_object(
             ticket.kc_gs,
@@ -401,7 +402,7 @@ class RelayServer(
 
         with self.db.connection() as conn:
             # ── 验证 ServiceTicket ──
-            # 重连时 require_service=False, require_kc=False，因为我们已经有旧会话中保存的 KcGs，
+            # 重连时 require_service=False, require_kc=False，因为已经有旧会话中保存的 KcGs，
             # 不需要从 ticket 中重新提取。这里只是校验 ticket 本身的有效性和用户身份匹配。
             ticket = self.security.validate_service_ticket(
                 conn,
@@ -617,14 +618,14 @@ class RelayServer(
     # ═══════════════════════════════════════════════════════════════
 
     def _require_session(self, websocket: Any) -> ClientSession:
-        """处理 RelayServer._require_session 相关的 GS 中继服务流程。"""
+        """获取会话"""
         session = self.sessions.get(websocket)
         if session is None or not session.authenticated:
             raise GsRequestError("NOT_AUTHENTICATED")
         return session
 
     def _require_kc_gs(self, session: ClientSession) -> bytes:
-        """处理 RelayServer._require_kc_gs 相关的 GS 中继服务流程。"""
+        """获取 KcGs"""
         if session.kc_gs is None:
             raise GsRequestError("KEY_NOT_CONFIGURED")
         return session.kc_gs
@@ -632,7 +633,7 @@ class RelayServer(
     def decrypt_auth(
         self, session: ClientSession, data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Decrypt and validate a session auth object."""
+        """解密认证信息"""
         auth = self.security.decrypt_session_auth(session, data)
         self._expire_reconnect_grace(now_ms())
         return auth
@@ -640,7 +641,7 @@ class RelayServer(
     def decrypt_payload(
         self, session: ClientSession, data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Decrypt and validate a session payload object."""
+        """解密并验证会话负载对象"""
         payload = self.security.decrypt_session_payload(session, data)
         self._expire_reconnect_grace(now_ms())
         return payload
@@ -653,12 +654,12 @@ class RelayServer(
         return des_encrypt_object(kc_gs, obj)
 
     def prune_replay_cache(self, current_ms: int) -> None:
-        """处理 RelayServer.prune_replay_cache 相关的 GS 中继服务流程。"""
+        """清理过期的nonce和重连宽限期"""
         self.replay_guard.prune(current_ms)
         self._expire_reconnect_grace(current_ms)
 
     def remote_ip(self, websocket: Any) -> Optional[str]:
-        """处理 RelayServer.remote_ip 相关的 GS 中继服务流程。"""
+        """获取远程 IP 地址"""
         remote = getattr(websocket, "remote_address", None)
         if remote is None:
             return None
@@ -675,7 +676,7 @@ class RelayServer(
 
     @staticmethod
     def _read_float(cmd: Dict[str, Any], field: str, default: float) -> float:
-        """处理 RelayServer._read_float 相关的 GS 中继服务流程。"""
+        """读取浮点数"""
         try:
             value = float(cmd.get(field, default))
         except (TypeError, ValueError) as exc:
@@ -686,34 +687,38 @@ class RelayServer(
 
     @classmethod
     def _read_unit_float(cls, cmd: Dict[str, Any], field: str, default: float) -> float:
-        """处理 RelayServer._read_unit_float 相关的 GS 中继服务流程。"""
+        """读取单位浮点数"""
         value = cls._read_float(cmd, field, default)
         return max(-1.0, min(1.0, value))
 
     @staticmethod
     def _config_int(value: Any, default: int) -> int:
-        """处理 RelayServer._config_int 相关的 GS 中继服务流程。"""
+        """读取整数"""
         try:
             return int(value)
         except (TypeError, ValueError):
             return default
 
     def get_room_tick(self, room_id: str) -> int:
+        """获取房间 tick"""
         if not room_id:
             return 0
         return int(self.room_ticks.get(room_id, 0))
 
     def set_room_tick(self, room_id: str, tick: int) -> None:
+        """设置房间 tick"""
         if not room_id:
             return
         self.room_ticks[room_id] = int(tick)
 
     def advance_room_tick(self, room_id: str) -> int:
+        """推进房间 tick"""
         tick = self.get_room_tick(room_id) + 1
         self.set_room_tick(room_id, tick)
         return tick
 
     def get_room_combat(self, room_id: str) -> CombatRuntime:
+        """获取房间战斗状态"""
         combat = self.room_combats.get(room_id)
         if combat is None:
             combat = CombatRuntime()
@@ -721,6 +726,7 @@ class RelayServer(
         return combat
 
     def get_room_sessions(self, room_id: str) -> Dict[Any, ClientSession]:
+        """获取房间内的所有会话"""
         result: Dict[Any, ClientSession] = {}
         if not room_id:
             return result
@@ -796,7 +802,7 @@ class RelayServer(
         print(f"[ROOM RUNTIME CLEANUP] room={room_id}")
 
     def parse_input_payload(self, cmd: dict) -> InputPayload:
-        """处理 RelayServer.parse_input_payload 相关的 GS 中继服务流程。"""
+        """解析输入负载。"""
         effect_ids_raw = cmd.get("equippedEffectIds", [])
         # 客户端传入的效果列表只接受 list，其他类型直接降级为空列表。
         effect_ids = (
@@ -833,6 +839,7 @@ class RelayServer(
         cmd: InputPayload,
         tick: int,
     ) -> bool:
+        """判断是否应该执行攻击。"""
         if session is None or session.client_id is None or session.is_dead:
             return False
 
@@ -846,11 +853,11 @@ class RelayServer(
         auto_fire = bool(weapon_cfg.get("auto_fire", attack_mode == "ranged"))
 
         # fire_interval_ticks 是攻击冷却间隔，单位是 tick。
-        # 数值越大，同一把武器两次攻击之间的最小等待时间越长。
         fire_interval_ticks = self._config_int(
             weapon_cfg.get("fire_interval_ticks", 10), 10
         )
 
+        # 按下了攻击键或者持续按住攻击键且为自动射击模式
         wants_attack = (cmd.attack_pressed) or (cmd.attack_held and auto_fire)
 
         if not wants_attack:
@@ -861,6 +868,7 @@ class RelayServer(
             session.last_attack_tick = -999999
 
         elapsed = tick - session.last_attack_tick
+        # 必须满足攻击间隔才能攻击
         if elapsed < fire_interval_ticks:
             return False
 
@@ -888,9 +896,9 @@ class RelayServer(
         #   payload 是 Base64(DES-CBC-PKCS7(JSON))
         #
         # payloadEncrypted=false:
-        #   payload 是明文 JSON 字符串，或者直接是 dict
+        #   payload 是明文 JSON 字符串
         #
-        # 没传 payloadEncrypted 时默认 true，兼容旧客户端。
+        # 没传 payloadEncrypted 时默认 true。
         # ------------------------------------------------------------
 
         payload_encrypted = self.read_bool(data.get("payloadEncrypted"), True)

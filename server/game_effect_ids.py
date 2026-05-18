@@ -3,21 +3,13 @@ from __future__ import annotations
 
 from typing import List
 
-# 效果 ID 别名表：多方映射到单一标准名
+# 同一从Unity客户端到Server服务器的命名
 EFFECT_ID_ALIASES = {
-    "hoversplit": "hover_split",
-    "hover_split": "hover_split",
     "Effect_HoverSplit": "hover_split",
-    "delayedexplosion": "delayed_explosion",
-    "delayed_explosion": "delayed_explosion",
     "Effect_DelayedExplosion": "delayed_explosion",
-    "swordwave": "sword_wave",
-    "sword_wave": "sword_wave",
     "Effect_SwordWave": "sword_wave",
-    "parry": "parry",
     "Effect_Parry": "parry",
 }
-
 
 def normalize_effect_id(effect_id: str) -> str:
     """规范化 normalize_effect_id 相关的效果 ID 数据。"""

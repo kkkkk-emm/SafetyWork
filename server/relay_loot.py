@@ -309,7 +309,7 @@ class LootManagerMixin:
             session.equipped_weapon_id = loot.item_id
 
     def cleanup_dead_loots_for_room(self: RelayServerContext, room_id: str) -> None:
-        """处理 LootManagerMixin.cleanup_dead_loots_for_room 相关的道具生成、拾取或清理逻辑。"""
+        """清理房间内已死亡的道具。"""
         loots = self.get_room_loots(room_id)
         dead_ids = [lid for lid, loot in loots.items() if not loot.alive]
         for lid in dead_ids:
