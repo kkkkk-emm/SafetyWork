@@ -374,7 +374,9 @@ def execute_sword_wave(
     effect_ids: List[str],
     cfg: EffectConfig,
 ) -> None:
-    """处理 execute_sword_wave 相关的战斗效果逻辑。"""
+    """
+    执行剑气效果。
+    """
     mag = (aim_x * aim_x + aim_y * aim_y) ** 0.5
     
     if mag <= 0.0001:

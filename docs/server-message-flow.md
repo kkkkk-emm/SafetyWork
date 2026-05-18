@@ -4,65 +4,7 @@
 
 ## 0. 总览
 
-### 0.1 Server 处理的消息 type
-
-当前业务入口在 `server/relay_server.py` 的 `RelayServer.handle_message()` 和 `RelayServer.dispatch_authenticated_message()`。
-
-入站消息：
-
-| type | 当前入口 | 说明 |
-| --- | --- | --- |
-| `GS_AUTH` | `handle_message()` 特殊分支 | 首次认证，建立 `ClientSession` 和 `sessionId` |
-| `RECONNECT_REQ` | `handle_message()` 特殊分支 | 断线后用旧 `sessionId` 和旧 `KcGs` 重连 |
-| `HEARTBEAT_REQ` | `dispatch_authenticated_message()` | 已认证会话心跳 |
-| `ROOM_CREATE_REQ` | `dispatch_authenticated_message()` -> `handle_create_room()` | 创建房间；旧命名 `CREATE_ROOM` 只在 `game_config.py` 中作为别名存在 |
-| `ROOM_JOIN_REQ` | `dispatch_authenticated_message()` -> `handle_join_room()` | 加入房间；旧命名 `JOIN_ROOM` 只在 `game_config.py` 中作为别名存在 |
-| `ROOM_READY_REQ` | `dispatch_authenticated_message()` -> `handle_ready()` | 切换 ready 状态；旧命名 `READY` 只在 `game_config.py` 中作为别名存在 |
-| `ROOM_START_REQ` | `dispatch_authenticated_message()` -> `handle_start_game()` | 房主请求开始对局 |
-| `INPUT` | `dispatch_authenticated_message()` -> `handle_input()` | 高频输入帧和服务端权威模拟 |
-| `LEAVE_ROOM` | `dispatch_authenticated_message()` -> `handle_leave_room()` | 主动离开房间 |
-
-出站或广播消息：
-
-| type | 发送位置 | 说明 |
-| --- | --- | --- |
-| `GS_AUTH_OK` | `handle_gs_auth()` | 认证成功单播 |
-| `HEARTBEAT_REP` | `handle_heartbeat()` | 心跳单播 |
-| `RECONNECT_REP` | `handle_reconnect()` | 重连成功单播 |
-| `ROOM_CREATE_REP` | `handle_create_room()` | 创建房间成功单播 |
-| `ROOM_JOIN_REP` | `handle_join_room()` | 加入房间成功单播 |
-| `ROOM_READY_REP` | `handle_ready()` | ready 状态更新成功单播 |
-| `ROOM_STATE` | `broadcast_room_state()` | 房间状态广播，使用每个客户端各自 `KcGs` 加密 payload |
-| `ROOM_START_REP` | `broadcast_game_start()` | 开局广播，包含 `sceneName`、`matchId`、`countdownMs`，使用各自 `KcGs` 加密 |
-| `SNAPSHOT` | `broadcast_snapshot()` / `send_snapshot()` | 对局快照广播，`payloadEncrypted` 按 `SNAPSHOT_ENCRYPT_EVERY_N` 策略决定 |
-| `RESULT` | `broadcast_result()` | 对局结束广播，`payloadEncrypted: true` |
-| `ERROR` | `send_error()` | 统一错误回包 |
-
-注意：`server/game_config.py` 中保留了旧命名别名（`TYPE_CREATE_ROOM = "CREATE_ROOM"`、`TYPE_JOIN_ROOM = "JOIN_ROOM"`、`TYPE_READY = "READY"`、`TYPE_START_GAME = "START_GAME"`），但这些仅用于 `GS_JSON_PAYLOAD_TYPES` 集合等兼容场景。`RelayServer.dispatch_authenticated_message()` 实际只按 `gs_protocol.py` 的 `ROOM_*_REQ` 分发，旧名称不会匹配到任何 handler。
-
-### 0.2 消息路由入口
-
-```text
-ws_server.main()
-└─ RelayServer.run()
-   ├─ self.db.ping()
-   ├─ self.load_runtime_keys()
-   ├─ asyncio.create_task(self.maintenance_loop())
-   └─ websockets.serve(self.handle_client, self.host, self.port)
-      └─ handle_client(websocket)
-         ├─ self.sessions[websocket] = ClientSession()
-         ├─ async for raw_message in websocket
-         │  └─ handle_message(websocket, raw_message)
-         └─ finally: cleanup_client(websocket, reason="disconnect")
-```
-
-`handle_message()` 的分发逻辑：
-
-```text
-handle_message()
-├─ json.loads(raw_message)
-├─ msg_type = data["type"]
-├─ if msg_type == GS_AUTH
+<!-- HEARTBEAT 已移除：此小节已在代码与文档中弃用 -->
 │  ├─ 已认证: invalidate_current_session() 废弃旧session → 重新执行 handle_gs_auth()
 │  └─ 未认证: run_with_error_response("GS_AUTH", handle_gs_auth())
 ├─ if msg_type == RECONNECT_REQ
@@ -70,7 +12,6 @@ handle_message()
 ├─ if not session.authenticated
 │  └─ send_error("NOT_AUTHENTICATED")
 └─ run_with_error_response("GS", dispatch_authenticated_message())
-   ├─ HEARTBEAT_REQ -> handle_heartbeat()
    ├─ ROOM_CREATE_REQ -> handle_create_room()
    ├─ ROOM_JOIN_REQ -> handle_join_room()
    ├─ ROOM_READY_REQ -> handle_ready()
@@ -121,63 +62,7 @@ playing
 └─ INPUT
    ├─ 首个 INPUT: STARTING -> PLAYING
    ├─ 服务端权威更新位置、跳跃、攻击、投射物、掉落物、生命数
-   ├─ 广播 SNAPSHOT
-   └─ 必要时 FINISHED + RESULT
 
-disconnect
-├─ STARTING/PLAYING 中断线
-│  ├─ 从 self.rooms 移除 websocket
-│  ├─ 从 self.sessions 移除 websocket
-│  ├─ _enter_reconnect_grace() 保存旧 ClientSession
-│  ├─ room_state.players[clientId].online = False
-│  └─ 广播 ROOM_STATE + SNAPSHOT
-└─ 非对局中断线或主动离开
-   ├─ remove_player_from_room_state()
-   ├─ remove_from_room()
-   ├─ 清理 sessions_by_id / reconnect_grace / sessions
-   └─ 广播 ROOM_STATE + SNAPSHOT
-
-reconnect
-└─ RECONNECT_REQ
-   ├─ 查 self.reconnect_grace[sessionId]
-   ├─ 验证新 ticket
-   ├─ 用旧 session.kc_gs 解密 auth/payload
-   ├─ old_session 绑定到新 websocket
-   ├─ room_state.players[clientId].online = True
-   ├─ 返回 RECONNECT_REP
-   └─ 广播 ROOM_STATE + SNAPSHOT
-```
-
-## 1. 每种消息类型的完整执行流程
-
-### 1.1 `GS_AUTH`
-
-#### 触发条件
-
-客户端在新 WebSocket 建立后发送明文 JSON，`ticket` 和 `auth` 是 Base64 DES-CBC 密文：
-
-```json
-{
-  "type": "GS_AUTH",
-  "clientId": "Client1",
-  "ticket": "Base64(DES_K_GS(ServiceTicket JSON))",
-  "auth": "Base64(DES_KcGs(Authenticator JSON))"
-}
-```
-
-顶层必需字段：`clientId`、`ticket`、`auth`。
-
-`ServiceTicket` 解密后要求包含：`ticketType="SERVICE_TICKET"`、`service`、`clientId`、`userId`、`username`、`loginGen`、`exp`、`kcGs`。
-
-`auth` 解密后至少要求包含：`ts`、`nonce`。当前 `handle_gs_auth()` 不检查 `auth.type`。
-
-#### 重复 GS_AUTH 处理
-
-如果同一 websocket 已经认证过又发送 `GS_AUTH`，当前代码**不是直接忽略**，而是调用 `invalidate_current_session()` 废弃旧 session（清理旧房间成员关系、移除 `sessions_by_id`/`reconnect_grace` 映射、回退为未认证 `ClientSession`），然后再执行完整的新 GS_AUTH 流程。这意味着客户端可以在同一连接上"换号重登"。
-
-#### 调用链
-
-```text
 handle_message()
 ├─ 如果 session.authenticated
 │  └─ invalidate_current_session(websocket, reason="renew_gs_auth")
@@ -215,95 +100,8 @@ handle_message()
       └─ websocket.send(make_message(TYPE_GS_AUTH_OK, ...))
 ```
 
-#### 状态变更
-
-- `self.sessions[websocket]` 从临时未认证 `ClientSession` 变为已认证会话。
-- 若为重复 GS_AUTH，旧 session 的房间成员关系、`sessions_by_id` 映射、`reconnect_grace` 窗口均被清理。
-- `session.authenticated=True`。
-- `session.session_id` 被设置为新生成的 `sessionId`。
-- `session.user_id`、`session.username`、`session.kc_gs`、`session.login_gen`、`session.client_id` 从 ticket / 顶层字段写入。
-- `self.sessions_by_id[session_id]` 新增映射。
-- `self.replay_cache` 新增 `{userId}/{clientId}/{nonce}` 防重放记录。
-- `security_event_log` 写入 `GS_AUTH_SUCCESS`；失败路径会写入对应失败事件。
-- 每次认证成功前会调用 `_expire_reconnect_grace()` 清理过期重连窗口。
-
-#### 广播/响应
-
-单播 `GS_AUTH_OK`：
-
-```json
-{
-  "type": "GS_AUTH_OK",
-  "sessionId": "sess-...",
-  "payload": "Base64(DES_KcGs({\"ts\":...,\"nonce\":\"...\",\"exp\":...}))"
-}
-```
-
-失败统一返回：
-
-```json
-{"type":"ERROR","error":"INVALID_TICKET"}
-```
-
-错误码还可能是 `KEY_NOT_CONFIGURED`、`AUTH_DECRYPT_FAILED`、`AUTH_EXPIRED`、`REPLAY_BLOCKED`、`TICKET_EXPIRED`、`TICKET_INVALIDATED`、`ACCOUNT_DISABLED` 等。
-
-### 1.2 `HEARTBEAT_REQ`
-
-#### 触发条件
-
-客户端必须已通过 `GS_AUTH`，发送：
-
-```json
-{
-  "type": "HEARTBEAT_REQ",
-  "sessionId": "sess-...",
-  "auth": "Base64(DES_KcGs({\"type\":\"HEARTBEAT_REQ\",\"sessionId\":\"sess-...\",\"ts\":...,\"nonce\":\"...\"}))"
-}
-```
-
-顶层必需字段：`sessionId`、`auth`。
-
-#### 调用链
-
-```text
-handle_message()
-└─ dispatch_authenticated_message()
-   └─ handle_heartbeat()
-      ├─ self._require_session(websocket)
-      ├─ require_fields(data, ("sessionId", "auth"))
-      ├─ require data.sessionId == session.session_id
-      ├─ self.decrypt_auth(session, data)
-      │  ├─ self.security.decrypt_session_auth()
-      │  │  └─ decrypt_session_object(session, data, "auth")
-      │  │     ├─ des_decrypt_object(session.kc_gs, data.auth)
-      │  │     ├─ timestamp_in_window()
-      │  │     └─ replay_guard.check_and_store()
-      │  └─ self._expire_reconnect_grace(now_ms())
-      ├─ require auth.type == HEARTBEAT_REQ
-      ├─ require auth.sessionId == session.session_id
-      ├─ des_encrypt_object(kc_gs, HEARTBEAT_REP payload)
-      └─ send_json(HEARTBEAT_REP)
-```
-
-#### 状态变更
-
-- 不修改房间或对局状态。
-- `self.replay_cache` 记录本次 `auth.nonce`。
-- 可能触发 `_expire_reconnect_grace()` 清理过期重连窗口。
-
-#### 广播/响应
-
-单播 `HEARTBEAT_REP`：
-
-```json
-{
-  "type": "HEARTBEAT_REP",
-  "sessionId": "sess-...",
-  "payload": "Base64(DES_KcGs({\"type\":\"HEARTBEAT_REP\",\"sessionId\":\"sess-...\",\"ts\":...,\"nonce\":\"...\"}))"
-}
-```
-
-`ts` 和 `nonce` 回显请求中的值。
+<!-- HEARTBEAT 已移除：协议中已弃用 HEARTBEAT_REQ/REP，文档中不再保留实现示例 -->
+<!-- HEARTBEAT 已移除：协议中已弃用 HEARTBEAT_REQ/REP，文档中不再保留实现示例 -->
 
 ### 1.3 `ROOM_CREATE_REQ`（旧名 `CREATE_ROOM`）
 
@@ -1140,7 +938,6 @@ des_decrypt_object(key, ciphertext_b64)
 | `RECONNECT_REQ.ticket` | `K_GS` | 重新确认用户身份和 ticket 有效性 |
 | `RECONNECT_REQ.auth` | old `session.kc_gs` | 证明重连者持有旧会话 key |
 | `RECONNECT_REQ.payload` | old `session.kc_gs` | 上报 `lastProcessedSeq` 等重连数据 |
-| `HEARTBEAT_REQ.auth` | current `session.kc_gs` | 会话内 auth |
 | `ROOM_CREATE_REQ.auth` | current `session.kc_gs` | 会话内 auth |
 | `ROOM_JOIN_REQ.auth` | current `session.kc_gs` | 会话内 auth |
 | `ROOM_READY_REQ.payload` | current `session.kc_gs` | 会话内 payload |
