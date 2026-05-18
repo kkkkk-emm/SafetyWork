@@ -164,7 +164,6 @@ def apply_projectile_effects_before_move(
                 continue
 
             if not proj.hover_split_initialized:
-                # 如果某颗子弹是旧逻辑生成，没走 apply_effects_on_projectile_spawned，也能初始化。
                 # 记录出生时的速度，后面每一帧都以它为基准做线性插值。
                 proj.hover_split_initialized = True
                 proj.hover_split_start_vel_x = proj.vel_x

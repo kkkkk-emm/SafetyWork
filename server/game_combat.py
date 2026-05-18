@@ -904,18 +904,15 @@ class CombatRuntime:
         sessions: Dict[object, ClientSession],
         tick: int,
     ) -> None:
-        """处理 CombatRuntime.step_projectiles 相关的战斗模拟、命中或事件逻辑。"""
+        """推进投射物的每帧逻辑。"""
         dead_ids = set()
 
         for proj in list(self.projectiles.values()):
             if not proj.alive:
                 dead_ids.add(proj.proj_id)
                 continue
-
-            # ------------------------------------------------------------
-            # 1) TTL
-            # ------------------------------------------------------------
-
+            
+            # 推进ttl
             proj.timer += SIM_DT
             proj.ttl -= SIM_DT
 
@@ -944,11 +941,7 @@ class CombatRuntime:
 
                 continue
 
-            # ------------------------------------------------------------
-            # 2) effects before move
-            # 比如 hover_split
-            # ------------------------------------------------------------
-
+            # 处理子弹效果的减速
             game_effects.apply_projectile_effects_before_move(
                 self,
                 sessions,
@@ -960,21 +953,14 @@ class CombatRuntime:
                 dead_ids.add(proj.proj_id)
                 continue
 
-            # ------------------------------------------------------------
-            # 3) move
-            # ------------------------------------------------------------
-
+            # 推进子弹位置
             old_x = proj.pos_x
             old_y = proj.pos_y
 
             next_x = proj.pos_x + proj.vel_x * SIM_DT
             next_y = proj.pos_y + proj.vel_y * SIM_DT
 
-            # ------------------------------------------------------------
-            # 4) swept world collision
-            # 子弹撞地图：只处理世界碰撞，不要 apply_hit。
-            # ------------------------------------------------------------
-
+            # 子弹撞地图。
             if self.projectile_swept_hits_world(
                 old_x=old_x,
                 old_y=old_y,
@@ -1024,10 +1010,7 @@ class CombatRuntime:
                 dead_ids.add(proj.proj_id)
                 continue
 
-            # ------------------------------------------------------------
-            # 5) swept player collision
-            # ------------------------------------------------------------
-
+            # 子弹撞击玩家
             target = self.find_projectile_swept_hit_player(
                 sessions=sessions,
                 old_x=old_x,
@@ -1099,21 +1082,14 @@ class CombatRuntime:
                 dead_ids.add(proj.proj_id)
                 continue
 
-            # ------------------------------------------------------------
-            # 6) no collision, commit move
-            # ------------------------------------------------------------
-
+            # 子弹没有碰到任何东西，直接更新位置
             proj.pos_x = next_x
             proj.pos_y = next_y
 
             if abs(proj.vel_x) > 0.0001 or abs(proj.vel_y) > 0.0001:
                 proj.rotation_deg = math.degrees(math.atan2(proj.vel_y, proj.vel_x))
 
-            # ------------------------------------------------------------
-            # 7) effects after move
-            # 比如 delayed_explosion 到时间爆炸 / hover_split 分裂
-            # ------------------------------------------------------------
-
+            # 处理子弹效果逻辑，比如爆照或分裂
             game_effects.apply_projectile_effects_after_move(
                 self,
                 sessions,
@@ -1124,10 +1100,7 @@ class CombatRuntime:
             if not proj.alive:
                 dead_ids.add(proj.proj_id)
 
-        # ------------------------------------------------------------
-        # 8) cleanup
-        # ------------------------------------------------------------
-
+        # 清理过期的子弹
         for pid in dead_ids:
             if pid in self.projectiles:
                 del self.projectiles[pid]
