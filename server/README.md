@@ -432,31 +432,7 @@ SNAPSHOT 核心字段：
 
 ---
 
-### HEARTBEAT_REQ / HEARTBEAT_REP — 阶段五第 5-6 步
-
-连接保活。
-
-请求：
-
-```json
-{
-  "type": "HEARTBEAT_REQ",
-  "sessionId": "sess-a-9001",
-  "auth": "Base64(DES(KcGs,{\"type\":\"HEARTBEAT_REQ\",\"sessionId\":\"sess-a-9001\",\"ts\":1776650534000,\"nonce\":\"n_heartbeat_a_1\"}))"
-}
-```
-
-响应：
-
-```json
-{
-  "type": "HEARTBEAT_REP",
-  "sessionId": "sess-a-9001",
-  "payload": "Base64(DES(KcGs,{\"type\":\"HEARTBEAT_REP\",\"sessionId\":\"sess-a-9001\",\"ts\":1776650534000,\"nonce\":\"n_heartbeat_a_1\"}))"
-}
-```
-
-注意：`HEARTBEAT_REP.payload.nonce` 回显 `HEARTBEAT_REQ.auth.nonce`。
+<!-- HEARTBEAT: 已弃用，客户端实现未发送 HEARTBEAT_REQ，连接保活由 WebSocket/重连逻辑处理 -->
 
 ---
 

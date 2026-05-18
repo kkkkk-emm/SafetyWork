@@ -1,21 +1,5 @@
 # Client / Server JSON 包清单
 
-本文基于 `client/` 与 `server/` 目录中当前代码整理。重点来源包括：
-
-- `client/Scripts/GBManager/网络相关/RelayChatClient.cs`
-- `client/Scripts/GBManager/网络相关/消息/AuthClient.cs`
-- `client/Scripts/GBManager/网络相关/消息/ProtocolMessage.cs`
-- `client/Scripts/GBManager/网络相关/房间相关/LobbyPayloads.cs`
-- `client/Scripts/GBManager/网络相关/MatchSnapshot.cs`
-- `client/Scripts/GBManager/网络相关/PlayerInputCmd.cs`
-- `server/relay_server.py`
-- `server/relay_room.py`
-- `server/relay_snapshot.py`
-- `server/relay_loot.py`
-- `server/game_combat.py`
-- `server/game_effects.py`
-- `server/gs_protocol.py`
-
 ## 约定
 
 WebSocket 文本帧内容都是 UTF-8 JSON。当前 GS 协议顶层通常复用同一个消息结构：
@@ -56,7 +40,6 @@ WebSocket 文本帧内容都是 UTF-8 JSON。当前 GS 协议顶层通常复用�
 | --- | --- | --- |
 | Client -> GS | `GS_AUTH` | 支持，未认证也可发 |
 | Client -> GS | `RECONNECT_REQ` | 支持，未认证也可发 |
-| Client -> GS | `HEARTBEAT_REQ` | 服务端支持；当前主客户端未看到发送入口 |
 | Client -> GS | `ROOM_CREATE_REQ` | 支持 |
 | Client -> GS | `ROOM_JOIN_REQ` | 支持 |
 | Client -> GS | `ROOM_READY_REQ` | 支持 |
@@ -65,7 +48,6 @@ WebSocket 文本帧内容都是 UTF-8 JSON。当前 GS 协议顶层通常复用�
 | Client -> GS | `LEAVE_ROOM` | 支持，但当前服务端不解密校验 `auth`，也无显式响应 |
 | GS -> Client | `GS_AUTH_OK` | 支持 |
 | GS -> Client | `RECONNECT_REP` | 支持 |
-| GS -> Client | `HEARTBEAT_REP` | 支持 |
 | GS -> Client | `ROOM_CREATE_REP` | 支持 |
 | GS -> Client | `ROOM_JOIN_REP` | 支持 |
 | GS -> Client | `ROOM_READY_REP` | 支持 |
@@ -140,50 +122,7 @@ WebSocket 文本帧内容都是 UTF-8 JSON。当前 GS 协议顶层通常复用�
 
 客户端 `GsAuthOkPayload` 类还声明了 `ok/clientId/sessionId/error`，但当前 GS 服务端没有填这些字段。
 
-### HEARTBEAT_REQ
-
-服务端支持，但当前主客户端 `RelayChatClient.cs` 未看到发送入口。
-
-```json
-{
-  "type": "HEARTBEAT_REQ",
-  "sessionId": "sess-...",
-  "auth": "<DES_KcGs(HeartbeatReqPayload)>"
-}
-```
-
-`auth` 解密后：
-
-```json
-{
-  "type": "HEARTBEAT_REQ",
-  "sessionId": "sess-...",
-  "ts": 1710000000000,
-  "nonce": "随机串"
-}
-```
-
-服务端返回：
-
-```json
-{
-  "type": "HEARTBEAT_REP",
-  "sessionId": "sess-...",
-  "payload": "<DES_KcGs(HeartbeatRepPayload)>"
-}
-```
-
-`payload` 解密后：
-
-```json
-{
-  "type": "HEARTBEAT_REP",
-  "sessionId": "sess-...",
-  "ts": 1710000000000,
-  "nonce": "回显HEARTBEAT_REQ.auth.nonce"
-}
-```
-
+### RECONNECT_REQ
 ### RECONNECT_REQ
 
 客户端发送：

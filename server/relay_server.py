@@ -41,8 +41,6 @@ from crypto_utils import (
 from gs_protocol import (
     TYPE_GS_AUTH,
     TYPE_GS_AUTH_OK,
-    TYPE_HEARTBEAT_REQ,
-    TYPE_HEARTBEAT_REP,
     TYPE_INPUT,
     TYPE_RECONNECT_REQ,
     TYPE_RECONNECT_REP,
@@ -247,11 +245,8 @@ class RelayServer(
         data: Dict[str, Any],
         msg_type: str,
     ) -> None:
-        """处理 RelayServer.dispatch_authenticated_message 相关的 GS 中继服务流程。"""
-        if msg_type == TYPE_HEARTBEAT_REQ:
-            # 处理心跳请求
-            await self.handle_heartbeat(websocket, data)
-        elif msg_type == TYPE_ROOM_CREATE_REQ:
+        """分发已认证的消息到相应的处理函数。"""
+        if msg_type == TYPE_ROOM_CREATE_REQ:
             # 处理创建房间请求
             await self.handle_create_room(websocket, data)
         elif msg_type == TYPE_ROOM_JOIN_REQ:
@@ -273,7 +268,7 @@ class RelayServer(
             await self.send_error(websocket, f"UNSUPPORTED_TYPE: {msg_type}")
 
     # ═══════════════════════════════════════════════════════════════
-    # GS_AUTH handler (阶段三第3-4步)
+    # GS_AUTH handler
     # ═══════════════════════════════════════════════════════════════
 
     async def handle_gs_auth(self, websocket: Any, data: Dict[str, Any]) -> None:
@@ -363,40 +358,6 @@ class RelayServer(
         )
         print(
             f"[GS_AUTH OK] client={client_id} userId={ticket.user_id} sessionId={session_id}"
-        )
-
-    async def handle_heartbeat(self, websocket: Any, data: Dict[str, Any]) -> None:
-        """处理 RelayServer.handle_heartbeat 相关的 GS 中继服务流程。"""
-        session = self._require_session(websocket)
-        if require_string_field(data, "sessionId") != session.session_id:
-            raise GsRequestError("SESSION_MISMATCH")
-
-        auth = self.decrypt_auth(session, data)
-        if require_string_field(auth, "type") != TYPE_HEARTBEAT_REQ:
-            raise GsRequestError("TYPE_MISMATCH")
-        if require_string_field(auth, "sessionId") != session.session_id:
-            raise GsRequestError("SESSION_MISMATCH")
-        heartbeat_nonce = require_string_field(auth, "nonce")
-        heartbeat_ts = require_int_field(auth, "ts")
-
-        # HEARTBEAT_REP: payload 中 nonce 回显 HEARTBEAT_REQ 的 nonce
-        kc_gs = self._require_kc_gs(session)
-        rep_payload = des_encrypt_object(
-            kc_gs,
-            {
-                "type": TYPE_HEARTBEAT_REP,
-                "sessionId": session.session_id or "",
-                "ts": heartbeat_ts,
-                "nonce": heartbeat_nonce,
-            },
-        )
-        await self.send_json(
-            websocket,
-            {
-                "type": TYPE_HEARTBEAT_REP,
-                "sessionId": session.session_id or "",
-                "payload": rep_payload,
-            },
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -1257,6 +1218,9 @@ class RelayServer(
     def _unbind_user_session(
         self, websocket: Any, session: Optional[ClientSession]
     ) -> None:
+        """
+        从用户会话映射中解绑指定的 websocket 和 session。
+        """
         if session is None or session.user_id is None:
             return
         if self.sessions_by_user_id.get(session.user_id) is websocket:
@@ -1265,6 +1229,9 @@ class RelayServer(
     async def _disconnect_existing_user_session(
         self, user_id: int, current_websocket: Any
     ) -> None:
+        """
+        断开与指定用户关联的现有会话（顶号）
+        """
         old_websocket = self.sessions_by_user_id.get(user_id)
         if old_websocket is None or old_websocket is current_websocket:
             return

@@ -83,7 +83,6 @@ python -m pytest tests/ -v
 | 入站 | 出站/广播 | 说明 |
 |---|---|---|
 | `GS_AUTH` | `GS_AUTH_OK` | Kerberos 认证门禁 |
-| `HEARTBEAT_REQ` | `HEARTBEAT_REP` | 连接保活 |
 | `RECONNECT_REQ` | `RECONNECT_REP` | 断线重连（30 秒宽限期） |
 | `ROOM_CREATE_REQ` | `ROOM_CREATE_REP` | 创建房间（自动加入为 Client1 房主） |
 | `ROOM_JOIN_REQ` | `ROOM_JOIN_REP` | 加入已有房间 |
