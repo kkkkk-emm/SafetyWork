@@ -93,7 +93,7 @@ class LootManagerMixin:
 
         next_tick = self.room_next_loot_tick.get(room_id)
 
-        # 第一次进入 PLAYING 后，初始化下一次空投时间。
+        # 房间首次进入 PLAYING 状态时，需初始化下一次生成的计划 tick
         if next_tick is None:
             self.room_next_loot_tick[room_id] = tick + LOOT_SPAWN_INTERVAL_TICKS
             print(
@@ -102,24 +102,29 @@ class LootManagerMixin:
             )
             return
 
+        # 当前 tick 未到达计划的生成时间，跳过本次判定
         if tick < next_tick:
             return
 
         loots = self.get_room_loots(room_id)
         alive_count = sum(1 for loot in loots.values() if loot.alive)
 
+        # 场上活跃空投数已达上限，推迟下一次生成
         if alive_count >= LOOT_MAX_ALIVE:
             self.room_next_loot_tick[room_id] = tick + LOOT_SPAWN_INTERVAL_TICKS
             return
 
         x = self.choose_random_loot_x()
 
+        # 根据配置权重决定空投类型，effect 和 weapon 的概率由 LOOT_TYPE_WEIGHTS 控制
         effect_weight = float(LOOT_TYPE_WEIGHTS.get("effect", 0.7))
         weapon_weight = float(LOOT_TYPE_WEIGHTS.get("weapon", 0.3))
+        # max() 保证分母非零，避免权重都为 0 时的除零问题
         total_weight = max(0.0001, effect_weight + weapon_weight)
 
         roll = _GAME_RANDOM.random() * total_weight
 
+        # 优先按权重抽取；若目标类型的池为空，则回退到另一类型
         if roll < effect_weight and EFFECT_DROP_POOL:
             loot_type = "effect"
             item_id = _GAME_RANDOM.choice(EFFECT_DROP_POOL)
@@ -130,8 +135,10 @@ class LootManagerMixin:
             loot_type = "effect"
             item_id = _GAME_RANDOM.choice(EFFECT_DROP_POOL)
         else:
+            # 两个池都为空，无法生成空投
             return
 
+        # 生成全局唯一的空投 ID
         loot_id = f"loot_{self.next_loot_id}"
         self.next_loot_id += 1
 
@@ -150,6 +157,7 @@ class LootManagerMixin:
 
         loots[loot_id] = loot
 
+        # 广播空投生成事件，客户端据此在指定位置显示空投
         combat.push_event(
             "LOOT_SPAWNED",
             {
@@ -162,6 +170,7 @@ class LootManagerMixin:
             },
         )
 
+        # 更新下一次生成的触发时间
         self.room_next_loot_tick[room_id] = tick + LOOT_SPAWN_INTERVAL_TICKS
 
         print(

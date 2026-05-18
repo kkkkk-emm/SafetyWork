@@ -179,7 +179,7 @@ class GsSecurityService:
         except (ProtocolError, CryptoError, ValueError, GsRequestError) as exc:
             self.record_failure(conn, context, reason="INVALID_TICKET")
             raise GsRequestError("INVALID_TICKET") from exc
-
+        
         ticket = ServiceTicket(
             user_id=user_id,
             username=username,
@@ -281,7 +281,7 @@ class GsSecurityService:
     ) -> Dict[str, Any]:
         """解密会话中已认证的消息字段（auth 或 payload）。
 
-        在业务消息中（CREATE_ROOM / JOIN_ROOM / READY / START / INPUT / HEARTBEAT）调用。
+        在业务消息中（CREATE_ROOM / JOIN_ROOM / READY / START / INPUT）调用。
         校验链：
         1. 从 session 获取 KcGs
         2. DES 解密
