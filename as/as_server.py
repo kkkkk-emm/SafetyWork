@@ -297,7 +297,7 @@ class AsServer:
         - INVALID_USERNAME: 规范化后为空或超过 user_account.username 的 64 字符限制。
         """
 
-        normalized = normalize_username(username)
+        normalized = normalize_username(username)  # 去除空白并转化为小写
         if normalized == "" or len(normalized) > USERNAME_MAX_LENGTH:
             raise AsRequestError("INVALID_USERNAME")
         return normalized
@@ -315,7 +315,7 @@ class AsServer:
         - 写入 security_event_log.remote_addr，仅用于审计和排查。
         """
 
-        remote = getattr(websocket, "remote_address", None)
+        remote = getattr(websocket, "remote_address", None)  # IP + port
         if remote is None:
             return None
         if isinstance(remote, tuple):
@@ -379,7 +379,7 @@ class AsServer:
 
         require_fields(msg, ("clientId", "payload"))
         client_id = require_string_field(msg, "clientId")
-        plain = self.decrypt_sensitive_payload(msg)
+        plain = self.decrypt_sensitive_payload(msg)  # RSA 解密
         username = self.validate_username(require_string_field(plain, "username"))
         password = require_string_field(plain, "password")
 
@@ -414,6 +414,7 @@ class AsServer:
                         pbkdf2_iter=self.config.pbkdf2_iter,
                     )
                 except Exception as exc:
+                    # 校验有无重复用户名
                     if self.db.is_duplicate_username_error(exc):
                         conn.rollback()
                         self.record_event(
@@ -483,6 +484,8 @@ class AsServer:
         issued_ms = now_ms()
         exp_ms = issued_ms + self.config.tgt_ttl_seconds * 1000  # 计算 TGT 的过期时间
         kc_tgs = generate_des_key()  # 生成 TGS 和 Client 的随机会话密钥
+
+        print("Liang Zerui")
 
         with self.db.connection() as conn:
             try:
@@ -556,8 +559,8 @@ class AsServer:
                     "iat": issued_ms,
                     "exp": exp_ms,
                 }
-                tgt = des_encrypt_object(self.k_tgs, tgt_plain)
-
+                tgt = des_encrypt_object(self.k_tgs, tgt_plain)  # 生成 TGT 票据
+                # 依据用户密码派生 Kuser，并加密 AS_REP.payload.part，Kuser 仅 AS 和 Client 可知
                 kuser = derive_kuser(
                     password,
                     _bytes(user["password_salt"]),

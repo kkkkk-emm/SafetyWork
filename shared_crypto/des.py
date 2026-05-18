@@ -134,7 +134,7 @@ S_BOXES = (
 _subkey_cache: dict[int, tuple[int, ...]] = {}
 _subkey_cache_rev: dict[int, tuple[int, ...]] = {}
 
-
+# 加密块
 def encrypt_block(block: int, key: int) -> int:
     _validate_u64_int("block", block)
     _validate_u64_int("key", key)
@@ -144,7 +144,7 @@ def encrypt_block(block: int, key: int) -> int:
         _subkey_cache[key] = subkeys
     return _des_core(block, subkeys)
 
-
+# 解密块
 def decrypt_block(block: int, key: int) -> int:
     _validate_u64_int("block", block)
     _validate_u64_int("key", key)
@@ -154,7 +154,7 @@ def decrypt_block(block: int, key: int) -> int:
         _subkey_cache_rev[key] = subkeys_rev
     return _des_core(block, subkeys_rev)
 
-# 填充
+# 填充至8字节倍数长度
 def pkcs7_pad(data: bytes, block_size: int = DES_BLOCK_BYTES) -> bytes:
     if not 1 <= block_size <= 255:
         raise ValueError("block_size must be in range [1, 255]")
@@ -217,14 +217,14 @@ def cbc_decrypt(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
 
     return pkcs7_unpad(bytes(output), DES_BLOCK_BYTES)
 
-
+# 校验 DES key 和 IV 长度
 def _validate_key_iv(key: bytes, iv: bytes) -> None:
     if len(key) != DES_KEY_BYTES:
         raise ValueError("DES key must be exactly 8 bytes")
     if len(iv) != DES_BLOCK_BYTES:
         raise ValueError("DES IV must be exactly 8 bytes")
 
-
+# 明文分块
 def _iter_blocks(data: bytes) -> Iterable[bytes]:
     for offset in range(0, len(data), DES_BLOCK_BYTES):
         yield data[offset : offset + DES_BLOCK_BYTES]
@@ -259,8 +259,8 @@ def _build_byte_perm_lut(table: tuple[int, ...], input_bits: int) -> list[list[i
         for byte_val in range(256):
             result = 0
             for out_pos, src_bit in enumerate(table):
-                # src_bit 是 1-based 输入位位置
-                src_pos = input_bits - src_bit  # 转为 0-based 从高位
+                # src_bit 是从左往右 1-based 输入位位置
+                src_pos = input_bits - src_bit  # 转为从右往左 0-based 从高位
                 if low_bit <= src_pos < high_bit:
                     # 该源位属于当前字节内
                     local_bit = src_pos - low_bit
@@ -329,13 +329,13 @@ for _sbox in S_BOXES:
     _SBOX_LUT.append(_lut)
 
 
-def _apply_sboxes(value48: int) -> int:
-    """S-box 替换：48-bit → 32-bit。使用预计算 LUT 直接索引。"""
-    output32 = 0
-    for i in range(8):
-        six_bits = (value48 >> (42 - 6 * i)) & 0x3F
-        output32 = (output32 << 4) | _SBOX_LUT[i][six_bits]
-    return output32
+# def _apply_sboxes(value48: int) -> int:
+#     """S-box 替换：48-bit → 32-bit。使用预计算 LUT 直接索引。"""
+#     output32 = 0
+#     for i in range(8):
+#         six_bits = (value48 >> (42 - 6 * i)) & 0x3F
+#         output32 = (output32 << 4) | _SBOX_LUT[i][six_bits]
+#     return output32
 
 
 def _round_function(r32: int, subkey48: int) -> int:
@@ -349,7 +349,7 @@ def _round_function(r32: int, subkey48: int) -> int:
         s_out = (s_out << 4) | _SBOX_LUT[i][six_bits]
     return _permute(s_out, P_TABLE, 32)
 
-
+# 加密主函数
 def _des_core(block64: int, subkeys: tuple[int, ...]) -> int:
     if len(subkeys) != 16:
         raise ValueError("DES requires exactly 16 subkeys")

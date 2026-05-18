@@ -187,8 +187,8 @@ def load_as_config() -> AsConfig:
         port=_int_env("AS_PORT", 9000),
         realm=realm,
         tgs_service_name=tgs_service_name,
-        tgt_ttl_seconds=_int_env("AUTH_TGT_TTL_SECONDS", 7200),
-        pbkdf2_iter=_int_env("AUTH_PBKDF2_ITER", 100000),
+        tgt_ttl_seconds=_int_env("AUTH_TGT_TTL_SECONDS", 7200),   # TGT 票据有效时间
+        pbkdf2_iter=_int_env("AUTH_PBKDF2_ITER", 100000),         # PKBDF2 迭代次数
         as_private_key_pem=_optional_env("AS_RSA_PRIVATE_PEM"),
         as_private_key_path=_optional_env("AS_RSA_PRIVATE_KEY_PATH"),
         k_tgs_base64=_required_env("K_TGS_BASE64"),
