@@ -1,4 +1,4 @@
-$env:AUTH_DB_HOST='172.27.25.176'
+$env:AUTH_DB_HOST='172.27.133.119'
 $env:AUTH_DB_PORT='3306'
 $env:AUTH_DB_USER='game_user'
 $env:AUTH_DB_PASSWORD='811019lin'
@@ -11,7 +11,7 @@ $env:K_GS_BASE64='RYz5juaShC4='
 
 $env:TGS_HOST='0.0.0.0'
 $env:TGS_PORT='9001'
-$env:AUTH_GS_SERVICE_NAME='game/ws@172.27.25.176:8765'
+$env:AUTH_GS_SERVICE_NAME='game/ws@172.27.133.119:8765'
 Write-Host "TGS K_TGS_BASE64=[$env:K_TGS_BASE64]"
 py tgs_server.py
 

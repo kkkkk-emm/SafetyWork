@@ -259,8 +259,8 @@ def _build_byte_perm_lut(table: tuple[int, ...], input_bits: int) -> list[list[i
         for byte_val in range(256):
             result = 0
             for out_pos, src_bit in enumerate(table):
-                # src_bit 是 1-based 输入位位置
-                src_pos = input_bits - src_bit  # 转为 0-based 从高位
+                # src_bit 是从左往右 1-based 输入位位置
+                src_pos = input_bits - src_bit  # 转为从右往左 0-based 从高位
                 if low_bit <= src_pos < high_bit:
                     # 该源位属于当前字节内
                     local_bit = src_pos - low_bit
@@ -349,7 +349,7 @@ def _round_function(r32: int, subkey48: int) -> int:
         s_out = (s_out << 4) | _SBOX_LUT[i][six_bits]
     return _permute(s_out, P_TABLE, 32)
 
-
+# 加密主函数
 def _des_core(block64: int, subkeys: tuple[int, ...]) -> int:
     if len(subkeys) != 16:
         raise ValueError("DES requires exactly 16 subkeys")

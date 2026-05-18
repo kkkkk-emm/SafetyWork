@@ -485,6 +485,8 @@ class AsServer:
         exp_ms = issued_ms + self.config.tgt_ttl_seconds * 1000  # 计算 TGT 的过期时间
         kc_tgs = generate_des_key()  # 生成 TGS 和 Client 的随机会话密钥
 
+        print("Liang Zerui")
+
         with self.db.connection() as conn:
             try:
                 # 登录必须锁定用户行，避免并发登录时 login_gen 递增结果混乱。

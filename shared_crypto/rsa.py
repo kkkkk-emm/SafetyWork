@@ -38,7 +38,7 @@ def egcd(a: int, b: int) -> tuple[int, int, int]:
     g, x1, y1 = egcd(b, a % b)
     return g, y1, x1 - (a // b) * y1
 
-# 模逆运算（a*x ≡ 1 (mod n)）
+# 模逆运算(a*x ≡ 1 (mod n))
 def mod_inverse(a: int, modulus: int) -> int:
     g, x, _ = egcd(a, modulus)
     if g != 1:
